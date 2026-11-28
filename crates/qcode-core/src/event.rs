@@ -45,7 +45,11 @@ use crate::task::Root;
 /// deterministic fallback produced a session title. Additive — a v11 reader
 /// that skips unknown kinds replays the log unchanged, and the display layer
 /// falls back to its own derivation when the event is missing.
-pub const EVENT_SCHEMA_VERSION: u32 = 12;
+///
+/// v13 adds `ToolMetadata::source` (ADR-0108 P1): the origin of third-party
+/// content a tool loaded (`mcp:<server>`, `user`, …), so the transcript can
+/// label it. Additive — a v12 reader drops the field and shows no badge.
+pub const EVENT_SCHEMA_VERSION: u32 = 13;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Event {
@@ -437,6 +441,15 @@ pub struct ToolMetadata {
     pub exit_code: Option<i32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub full_output_path: Option<String>,
+    /// Where the content a tool loaded came from, when that matters to the
+    /// reader (ADR-0108 §5): `mcp:<server>` for a served skill, the local root
+    /// (`user`, `project`, …) otherwise. `None` for tools that load nothing.
+    ///
+    /// Only `skill` sets it today. The tool's own output already says
+    /// `Source: …` in its text; this field is what lets the transcript show a
+    /// badge without re-parsing that text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

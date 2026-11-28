@@ -524,6 +524,38 @@ fn tool_result_updates_the_matching_row() {
     assert!(matches!(app.blocks.last(), Some(Block::Tool(tool)) if tool.expanded));
 }
 
+/// ADR-0108 §5: a served skill names its origin on the result, and the row
+/// carries it so the transcript can show a badge instead of re-parsing the
+/// tool's own text.
+#[test]
+fn a_tool_result_carries_its_source_onto_the_row() {
+    pin();
+    let mut app = App::new("mock", "mock-1");
+    app.apply(&event(EventKind::ToolCall(ToolCall {
+        call_id: "c1".to_string(),
+        name: "skill".to_string(),
+        arguments: json!({"name": "pdf"}),
+    })));
+    app.apply(&event(EventKind::ToolResult(ToolResult {
+        call_id: "c1".to_string(),
+        status: ToolStatus::Ok,
+        output: "# Skill: pdf".to_string(),
+        metadata: qcode_core::event::ToolMetadata {
+            source: Some("mcp:github".to_string()),
+            ..Default::default()
+        },
+        diff: None,
+        images: Vec::new(),
+    })));
+
+    match app.blocks.last() {
+        Some(Block::Tool(tool)) => {
+            assert_eq!(tool.source.as_deref(), Some("mcp:github"));
+        }
+        other => panic!("unexpected block: {other:?}"),
+    }
+}
+
 #[test]
 fn todo_write_result_becomes_a_todo_block() {
     pin();

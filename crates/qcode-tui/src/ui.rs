@@ -472,6 +472,14 @@ fn push_tool(lines: &mut Vec<Line<'static>>, tool: &ToolEntry, nested: Option<(u
         Span::raw(" "),
         Span::styled(format!("[{status}{elapsed}]"), Style::default().fg(color)),
     ];
+    // ADR-0108 §5: a loaded skill names its origin (`mcp:<server>` / `user` /
+    // `project`). The tool's own text says it too; this is the row-level badge.
+    if let Some(source) = &tool.source {
+        spans.push(Span::styled(
+            format!(" · {source}"),
+            Style::default().fg(Color::DarkGray),
+        ));
+    }
     if let Some(diff) = &tool.diff {
         let additions: u32 = diff.files.iter().map(|file| file.additions).sum();
         let deletions: u32 = diff.files.iter().map(|file| file.deletions).sum();

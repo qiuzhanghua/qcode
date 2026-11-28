@@ -146,6 +146,10 @@ pub struct ToolEntry {
     pub status: Option<ToolStatus>,
     pub output: String,
     pub expanded: bool,
+    /// Where the content came from, when the tool loads third-party material
+    /// (ADR-0108 §5). Copied from the result's `metadata.source`; `None` for
+    /// every tool that loads nothing.
+    pub source: Option<String>,
     /// When the call started, kept to show a duration once it finishes.
     pub started: OffsetDateTime,
     pub elapsed: Option<Duration>,

@@ -1263,6 +1263,10 @@ pub(crate) fn block_row(index: usize, shell: &Shell, entity: &Entity<Shell>) -> 
                         .text_color(rgb(0x777777))
                         .child(format!("· {summary}"))
                 }))
+                .children(tool.source.as_ref().map(|source| {
+                    // ADR-0108 §5: the origin of loaded third-party content.
+                    div().text_color(rgb(0x8a7fd0)).child(format!("· {source}"))
+                }))
                 .children(tool.diff.as_ref().map(diff_chips));
             if let Some(status) = status {
                 header = header.child(

@@ -13986,7 +13986,10 @@ P0 按修订后的范围落地：`crates/qcode-tools/src/skills.rs`（身份、�
   内容绑定」本身是该让模型看见的信息。
 - 内容绑定：**没有授权缓存**，冻结在「清单即绑定」这一层（见上面表格）。不新增任何授权
   点，`policy.rs` 一行未改。
-- 不做的仍是 P1/P2：界面来源徽章（schema v13）、`directory_read`、捆绑脚本、磁盘缓存。
+- **界面来源徽章（P1，2026-11-28 补做）**：schema v13 给 `ToolMetadata` 加加性的
+  `source`，`skill` 的正文与附件写入 `mcp:<server>` / 本地来源；`ToolEntry` 跟着带，
+  TUI 与 GUI 的工具行显示徽章。旧日志读成 `None`，行为不变。
+- 不做的仍是 P2：`directory_read`、捆绑脚本、磁盘缓存。
 - **热更新（P1，2026-11-28 补做）**：SEP-2640 没有 `list_changed` 通知（见 §2 勘误），
   所以按 `ttlMs` 刷新：`qcode-mcp` 把每页的 `ttlMs` 带出来（取最小），kernel 起一个
   `spawn_skill_refresh` 任务（持有 `Weak<SkillIndex>`，会话结束自然退出），到期重列该

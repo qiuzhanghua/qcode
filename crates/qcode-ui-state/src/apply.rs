@@ -142,6 +142,7 @@ impl App {
                     status: None,
                     output: String::new(),
                     expanded: false,
+                    source: None,
                     started: event.ts,
                     elapsed: None,
                     child: false,
@@ -153,6 +154,7 @@ impl App {
                 let todo_update = self.tool_mut(&result.call_id).and_then(|tool| {
                     tool.status = Some(result.status);
                     tool.output = result.output.clone();
+                    tool.source = result.metadata.source.clone();
                     tool.elapsed = Some((event.ts - tool.started).max(Duration::ZERO));
                     // v5 records the diff with the result; older logs only have
                     // the arguments, so rebuild what we can from those.
@@ -311,6 +313,7 @@ impl App {
                     status: None,
                     output: String::new(),
                     expanded: false,
+                    source: None,
                     started: event.ts,
                     elapsed: None,
                     child: true,
@@ -323,6 +326,7 @@ impl App {
                 if let Some(tool) = self.tool_mut(&call_id) {
                     tool.status = Some(result.status);
                     tool.output = result.output.clone();
+                    tool.source = result.metadata.source.clone();
                     tool.elapsed = Some((event.ts - tool.started).max(Duration::ZERO));
                     tool.diff = result.diff.clone().or_else(|| {
                         (event.v < 5)

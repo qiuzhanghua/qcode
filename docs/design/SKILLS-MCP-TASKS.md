@@ -73,9 +73,9 @@ ADR §5/§6 第 4 项：P0 明确接受「这条防护对人不可见」。要�
 
 | 编号 | 任务 | 做法 | 验收 | 规模 |
 |---|---|---|---|---|
-| **D1** | schema v13：工具结果带来源 | `ToolEntry` 增 `source: Option<String>`（`skill` 的 `mcp:<server>` 或本地来源），旧事件读成 `None` | schema 兼容测试（v12 事件仍可读）、`event_schema.rs` 更新 | M（~120 行） |
-| **D2** | 渲染 + 文案 | TUI/GUI 的工具卡把来源显示出来（`render/transcript.rs`），i18n 2 条 | 渲染快照/断言；golden 重录 | S（~60 行） |
-| **D3** | 回放与旧会话 | 旧事件没有来源时不显示徽章、不伪装成本地 | 回放测试 | S |
+| **D1** ✅ | schema v13：工具结果带来源 | `ToolMetadata.source: Option<String>`（加性，旧日志读 None）；`EVENT_SCHEMA_VERSION` 12 → 13 | event schema 测试 20 条通过 | S（~30 行） |
+| **D2** ✅ | 渲染 | TUI 工具行与 GUI 工具行都显示 `· mcp:<server>`；`ToolEntry.source` 由 ui-state 从结果元数据复制 | 新增 ui-state 测试「结果来源落到行上」；技能单测断言 `metadata.source` | S（~40 行） |
+| **D3** ✅ | 回放与旧会话 | 旧事件没有 `source`，读成 `None`，不显示徽章、不伪装成本地 | 加性字段，无需迁移；schema 注释写明 v12 读者只是看不到徽章 | — |
 
 ### E. P2（记录，不做）
 

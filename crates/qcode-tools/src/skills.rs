@@ -1425,7 +1425,12 @@ impl Tool for SkillTool {
                     let bytes = self.read_served(&skill, &uri).await?;
                     let text = String::from_utf8(bytes)
                         .map_err(|_| ToolError::Invalid(format!("'{file}' is not utf-8 text")))?;
-                    Ok(ToolOutput::ok(text.trim_end().to_string()))
+                    let text = text.trim_end().to_string();
+                    Ok(ToolOutput::ok(text.clone()).with_metadata(ToolMetadata {
+                        bytes: text.len() as u64,
+                        source: Some(skill.source.origin_label()),
+                        ..ToolMetadata::default()
+                    }))
                 }
                 None => {
                     let bytes = self.read_served(&skill, &root_uri).await?;
@@ -1510,6 +1515,10 @@ fn render_skill(skill: &Skill) -> ToolOutput {
         .with_metadata(ToolMetadata {
             truncated,
             bytes,
+            // The transcript shows this as a badge (ADR-0108 §5). The text
+            // above says the same thing; the field is what keeps the display
+            // from re-parsing that text.
+            source: Some(skill.source.origin_label()),
             ..ToolMetadata::default()
         })
         .with_full_output(raw, truncated)
@@ -1585,6 +1594,7 @@ fn read_bundled_file(skill: &Skill, requested: &str) -> Result<ToolOutput, ToolE
         .with_metadata(ToolMetadata {
             truncated,
             bytes,
+            source: Some(skill.source.origin_label()),
             ..ToolMetadata::default()
         })
         .with_full_output(raw, truncated))
@@ -1920,6 +1930,11 @@ Skills never change approval rules.
                 .await
                 .unwrap();
             assert!(output.output.contains("Do the thing."), "{}", output.output);
+            assert_eq!(
+                output.metadata.source.as_deref(),
+                Some("mcp:github"),
+                "the row-level badge reads this field"
+            );
             assert!(
                 output.output.contains("Source: mcp:github"),
                 "{}",

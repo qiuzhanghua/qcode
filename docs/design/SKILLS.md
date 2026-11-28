@@ -74,7 +74,8 @@ qcode 只解释两个字段：
   文件被拒绝。
 - 服务端 skill 的 `file` 必须在该 skill 的清单里；正文按清单的 size + SHA-256 校验，且
   `SKILL.md` 的 frontmatter 必须与 `skills/list` 报告的一致，否则拒载。
-- 输出与内置工具一样做 32KiB 截断；MCP 来源的输出带 `Source: mcp:<server>`，本地带本地来源。
+- 输出与内置工具一样做 32KiB 截断；正文里带 `Source: mcp:<server>`（本地带本地来源），
+  同一来源也写进结果的 `metadata.source`，供 TUI/GUI 的工具行显示徽章（schema v13）。
 
 ## 6. 限制
 
