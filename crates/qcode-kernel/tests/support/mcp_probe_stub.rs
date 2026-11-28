@@ -91,6 +91,13 @@ fn serve() {
     // Optional capabilities come from the environment, like `mcp-stub` in
     // `qcode-mcp`, so a test can make this server declare the skills extension.
     let caps = std::env::var("MCP_STUB_CAPS").unwrap_or_else(|_| "tools".to_string());
+    // ADR-0108 §2: a listing's freshness hint, and a catalogue that moves after
+    // the first page, so a test can watch a TTL-driven refresh land.
+    let skill_ttl: Option<u64> = std::env::var("MCP_STUB_SKILL_TTL_MS")
+        .ok()
+        .and_then(|value| value.parse().ok());
+    let rotate = std::env::var("MCP_STUB_SKILL_ROTATE").is_ok_and(|value| value == "1");
+    let mut skill_listings = 0u32;
     let has = |capability: &str| caps.split(',').any(|name| name.trim() == capability);
     let mut capabilities = json!({"tools": {}});
     if has("skills") || has("directory-read") {
@@ -123,24 +130,38 @@ fn serve() {
             "notifications/initialized" => {}
             // ADR-0108: one skill, served with real digests so a test can drive
             // the whole path — list, index, fetch, verify.
-            "skills/list" => respond(
-                &mut stdout,
-                id,
-                json!({
-                    "skills": [{
-                        "uri": SKILL_URI,
+            "skills/list" => {
+                skill_listings += 1;
+                let mut skills = vec![json!({
+                    "uri": SKILL_URI,
+                    "frontmatter": {
+                        "name": "probe-skill",
+                        "description": "A skill the probe stub serves.",
+                        "license": "MIT"
+                    },
+                    "resources": [
+                        {"uri": SKILL_URI, "digest": SKILL_DIGEST, "size": SKILL_MD.len()},
+                        {"uri": GUIDE_URI, "digest": GUIDE_DIGEST, "size": GUIDE.len()}
+                    ]
+                })];
+                if rotate && skill_listings > 1 {
+                    skills.push(json!({
+                        "uri": LATE_URI,
                         "frontmatter": {
-                            "name": "probe-skill",
-                            "description": "A skill the probe stub serves.",
-                            "license": "MIT"
+                            "name": "late-skill",
+                            "description": "A skill that appeared after the first listing."
                         },
                         "resources": [
-                            {"uri": SKILL_URI, "digest": SKILL_DIGEST, "size": SKILL_MD.len()},
-                            {"uri": GUIDE_URI, "digest": GUIDE_DIGEST, "size": GUIDE.len()}
+                            {"uri": LATE_URI, "digest": LATE_DIGEST, "size": LATE_MD.len()}
                         ]
-                    }]
-                }),
-            ),
+                    }));
+                }
+                let mut result = json!({"skills": skills});
+                if let Some(ttl) = skill_ttl {
+                    result["ttlMs"] = json!(ttl);
+                }
+                respond(&mut stdout, id, result)
+            }
             "resources/read" => {
                 let uri = message
                     .get("params")
@@ -152,6 +173,11 @@ fn serve() {
                         &mut stdout,
                         id,
                         json!({"contents": [{"uri": SKILL_URI, "text": SKILL_MD}]}),
+                    ),
+                    LATE_URI => respond(
+                        &mut stdout,
+                        id,
+                        json!({"contents": [{"uri": LATE_URI, "text": LATE_MD}]}),
                     ),
                     GUIDE_URI => respond(
                         &mut stdout,
@@ -275,6 +301,9 @@ fn respond_error(stdout: &mut impl Write, id: Option<Value>, code: i64, message:
 }
 
 const SKILL_URI: &str = "skill://probe-skill/SKILL.md";
+const LATE_URI: &str = "skill://late-skill/SKILL.md";
+const LATE_MD: &str = "---\nname: late-skill\ndescription: A skill that appeared after the first listing.\n---\n\nLate body.\n";
+const LATE_DIGEST: &str = "sha256:f517c4407b729bced4793744a4d1d02088b00aa8fcf2c7e62418be241b72426c";
 const GUIDE_URI: &str = "skill://probe-skill/references/GUIDE.md";
 // `license` is here so a test can see that a frontmatter field other than
 // `name`/`description` survives both the wire and the full-field comparison.

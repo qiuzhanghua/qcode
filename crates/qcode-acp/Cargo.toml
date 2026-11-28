@@ -7,6 +7,7 @@ rust-version.workspace = true
 
 [dependencies]
 qcode-core = { version = "0.20.0", path = "../qcode-core" }
+qcode-tools = { version = "0.20.0", path = "../qcode-tools" }
 async-trait.workspace = true
 serde.workspace = true
 serde_json.workspace = true

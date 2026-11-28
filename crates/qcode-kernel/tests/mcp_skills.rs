@@ -253,3 +253,68 @@ async fn a_served_skill_does_not_shadow_a_local_one() {
         other => panic!("expected an ambiguity, got {other:?}"),
     }
 }
+
+/// SEP-2640 has no `list_changed` notification: `ttlMs` is the only hint that a
+/// server's catalogue moved. A stale listing must be re-fetched and the new
+/// skill must reach the prompt on the next turn (ADR-0108 §2).
+#[tokio::test]
+async fn a_servers_ttl_refresh_reaches_the_index() {
+    let workspace = workspace("ttl_refresh");
+    let mut server = declaring_server(Some(true)).1;
+    server
+        .env
+        .insert("MCP_STUB_SKILL_TTL_MS".to_string(), "120".to_string());
+    server
+        .env
+        .insert("MCP_STUB_SKILL_ROTATE".to_string(), "1".to_string());
+    let connection = connect(&workspace, server).await;
+
+    let config = McpConfig {
+        servers: vec![McpServerConfig {
+            name: "probe".to_string(),
+            skills: Some(true),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let (served, ttls) =
+        qcode_kernel::collect_served_skill_listings(&connection, &config, false).await;
+    assert_eq!(served.len(), 1, "the first listing only has probe-skill");
+    assert_eq!(
+        ttls,
+        vec![("probe".to_string(), Some(120))],
+        "the stub advertised a ttl"
+    );
+
+    let index = Arc::new(SkillIndex::new(
+        SkillSet::default().with_served(qcode_kernel::served_skills(served)),
+    ));
+    qcode_kernel::spawn_skill_refresh(
+        connection.source.clone().expect("a connected server"),
+        ttls,
+        index.clone(),
+    );
+
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    while tokio::time::Instant::now() < deadline && index.get("late-skill").is_none() {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+
+    assert!(
+        index.get("late-skill").is_some(),
+        "the ttl refresh never re-listed the server"
+    );
+    assert!(
+        index.get("probe-skill").is_some(),
+        "a refresh must not drop the skills that stayed"
+    );
+    let section = index.prompt_section().expect("a non-empty index");
+    assert!(section.contains("late-skill"), "{section}");
+    // A refresh replaces the server's entries; it must not leave two copies of
+    // the skill that stayed behind.
+    assert_eq!(
+        section.matches("`probe-skill`").count(),
+        1,
+        "a refresh duplicated the skill that did not change: {section}"
+    );
+}

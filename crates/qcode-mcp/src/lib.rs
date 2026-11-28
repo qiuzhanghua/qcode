@@ -723,6 +723,21 @@ pub struct McpToolSource {
     servers: Vec<ServerHandle>,
 }
 
+/// One server's answer to `skills/list`.
+///
+/// Carries the listing's freshness hint (`ttlMs`, SEP-2549) so the session can
+/// re-list once it goes stale: SEP-2640 defines no `list_changed` notification,
+/// so a TTL is the only thing that ever says "my skills changed" (ADR-0108 §2,
+/// corrected 2026-11-28).
+#[derive(Debug, Clone)]
+pub struct ServerSkillListing {
+    /// The host-assigned label of the server that answered.
+    pub server: String,
+    pub skills: Vec<ServedSkill>,
+    /// The smallest `ttlMs` across the pages. `None` when the server omitted it.
+    pub ttl_ms: Option<u64>,
+}
+
 /// One skill a server listed, in the host's own words rather than rmcp's.
 ///
 /// The kernel turns these into `qcode_tools::skills::Skill`; keeping the wire
@@ -788,8 +803,8 @@ impl McpToolSource {
     pub async fn list_skills(
         &self,
         allowed: &std::collections::BTreeSet<String>,
-    ) -> (Vec<ServedSkill>, Vec<SkillListingError>) {
-        let mut skills = Vec::new();
+    ) -> (Vec<ServerSkillListing>, Vec<SkillListingError>) {
+        let mut listings = Vec::new();
         let mut errors = Vec::new();
         for server in self
             .servers
@@ -805,9 +820,18 @@ impl McpToolSource {
                 continue;
             }
             match server.list_all_skills().await {
-                Ok(listed) => {
-                    tracing::info!(server = %label, count = listed.len(), "mcp skills listed");
-                    skills.extend(listed);
+                Ok((skills, ttl_ms)) => {
+                    tracing::info!(
+                        server = %label,
+                        count = skills.len(),
+                        ttl_ms = ?ttl_ms,
+                        "mcp skills listed"
+                    );
+                    listings.push(ServerSkillListing {
+                        server: label,
+                        skills,
+                        ttl_ms,
+                    });
                 }
                 Err(message) => {
                     tracing::warn!(server = %label, %message, "skills/list failed; skipping");
@@ -818,7 +842,7 @@ impl McpToolSource {
                 }
             }
         }
-        (skills, errors)
+        (listings, errors)
     }
 
     /// The bytes of one resource, from the server the skill came from.
@@ -842,9 +866,10 @@ impl ServerHandle {
     /// A paginated listing is the normal case for a server with many skills, and
     /// stopping at the first page would silently drop the rest. The page count is
     /// bounded so a server that always returns a cursor cannot spin here.
-    async fn list_all_skills(&self) -> Result<Vec<ServedSkill>, String> {
+    async fn list_all_skills(&self) -> Result<(Vec<ServedSkill>, Option<u64>), String> {
         const MAX_PAGES: usize = 64;
         let mut skills = Vec::new();
+        let mut ttl_ms: Option<u64> = None;
         let mut cursor: Option<rmcp::model::Cursor> = None;
         for _ in 0..MAX_PAGES {
             // Built through serde: `PaginatedRequestParams` is
@@ -860,6 +885,12 @@ impl ServerHandle {
                 .list_skills(params)
                 .await
                 .map_err(|error| error.to_string())?;
+            // SEP-2549's freshness hint: the smallest TTL across pages, since
+            // every page is served at its own moment. Absent means the server
+            // promised nothing, so nothing is refreshed on a timer.
+            if let Some(ttl) = result.ttl_ms {
+                ttl_ms = Some(ttl_ms.map_or(ttl, |seen: u64| seen.min(ttl)));
+            }
             for skill in result.skills {
                 match self.served_skill(skill) {
                     Ok(skill) => skills.push(skill),
@@ -870,7 +901,7 @@ impl ServerHandle {
             }
             match result.next_cursor {
                 Some(next) => cursor = Some(next),
-                None => return Ok(skills),
+                None => return Ok((skills, ttl_ms)),
             }
         }
         Err(format!(

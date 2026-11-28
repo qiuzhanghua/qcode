@@ -56,7 +56,9 @@ pub struct Engine {
     /// Same string `qc run` and the TUI pass (ADR-0087): without it the model
     /// cannot see the skills at all, so `/skills` would list what it may not
     /// use.
-    pub skills_prompt: Option<String>,
+    /// The session's skills. Read per turn rather than cached: a TTL refresh can
+    /// add a skill mid-session (ADR-0108 §2).
+    pub skill_index: std::sync::Arc<qcode_tools::skills::SkillIndex>,
     /// The workspace `AGENTS.md`, injected into the system prompt. The GUI used
     /// to hardcode `None` here while the other two frontends loaded it.
     pub agents_md: Option<String>,
@@ -674,7 +676,7 @@ pub(crate) fn spawn(engine: Engine, port: KernelPort, mut commands: UnboundedRec
                     let title_config = engine.session_title.clone();
                     // ADR-0087: the GUI used to leave both of these `None`, so
                     // the model never saw `AGENTS.md` or the skills index.
-                    let turn_skills = engine.skills_prompt.clone();
+                    let turn_skills = engine.skill_index.prompt_section();
                     let turn_agents_md = engine.agents_md.clone();
                     // 定时任务服务随回合注入：工具经 `ToolContext.scheduler`
                     // 拿到运行时 `Scheduler`（模型可创建 / 管理定时任务）。
@@ -1710,7 +1712,9 @@ mod host_tests {
             context_window: Some(128_000),
             network: None,
             snapshots: None,
-            skills_prompt: None,
+            skill_index: std::sync::Arc::new(qcode_tools::skills::SkillIndex::new(
+                qcode_tools::skills::SkillSet::default(),
+            )),
             agents_md: None,
             shell_env: std::sync::Arc::new(qcode_tools::shell_env::ShellEnvCache::disabled()),
             schedules: Vec::new(),

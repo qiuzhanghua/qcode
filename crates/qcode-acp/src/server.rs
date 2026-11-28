@@ -41,7 +41,9 @@ pub struct Deps {
     pub max_cost_usd: Option<f64>,
     pub context_window: Option<u64>,
     pub agents_md: Option<String>,
-    pub skills: Option<String>,
+    /// The session's skills, read per request rather than cached: a TTL refresh
+    /// can add one mid-session (ADR-0108 §2).
+    pub skill_index: std::sync::Arc<qcode_tools::skills::SkillIndex>,
     pub network: Option<qcode_core::network::SharedNetwork>,
     /// Snapshot the workspace before run_shell (shell can write anywhere).
     pub snapshot_shell: bool,
@@ -303,7 +305,7 @@ impl Agent {
                 on_delta: None,
                 context_window: deps.context_window,
                 agents_md: deps.agents_md.clone(),
-                skills: deps.skills.clone(),
+                skills: deps.skill_index.prompt_section(),
                 network: deps.network.clone(),
                 attachments: Vec::new(),
                 inbox: None,

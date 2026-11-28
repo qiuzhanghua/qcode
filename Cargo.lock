@@ -5403,6 +5403,7 @@ dependencies = [
  "async-trait",
  "qcode-core",
  "qcode-providers",
+ "qcode-tools",
  "serde",
  "serde_json",
  "tempfile",

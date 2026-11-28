@@ -89,9 +89,11 @@ pub(crate) fn gui_rebuild_hook(
             .map_err(|error| error.to_string())?;
             let snapshots = qcode_core::snapshot::SnapshotStore::at_data_dir(kernel.store.root())
                 .with_shell(kernel.config.agent.snapshot_shell);
-            // ADR-0087: same two strings `qc run` and the TUI inject, so the
-            // model sees `AGENTS.md` and the skills index here too.
-            let skills_prompt = kernel.skills.prompt_section();
+            // ADR-0087: same two inputs `qc run` and the TUI inject, so the
+            // model sees `AGENTS.md` and the skills index here too. The index is
+            // handed over, not a rendered string, so each turn sees the current
+            // skills (ADR-0108 §2).
+            let skill_index = kernel.skills.clone();
             let agents_md = qcode_core::agents::load(&workspace).ok().flatten();
             let engine = qcode_gui::Engine {
                 store: kernel.store,
@@ -116,7 +118,7 @@ pub(crate) fn gui_rebuild_hook(
                 context_window: Some(kernel.config.context.window_tokens),
                 network: kernel.network,
                 snapshots: Some(snapshots),
-                skills_prompt,
+                skill_index,
                 agents_md,
                 shell_env: kernel.shell_env.clone(),
                 schedules: qcode_kernel::config::resolve_schedules(&kernel.config.schedules).0,
@@ -477,8 +479,8 @@ pub(crate) async fn cmd_gui(
         context_window: Some(kernel.config.context.window_tokens),
         network: kernel.network,
         snapshots: Some(snapshots),
-        // ADR-0087: same two strings `qc run` and the TUI inject.
-        skills_prompt: kernel.skills.prompt_section(),
+        // ADR-0087: same two inputs `qc run` and the TUI inject.
+        skill_index: kernel.skills.clone(),
         agents_md: qcode_core::agents::load(&workspace)?,
         shell_env: kernel.shell_env.clone(),
         schedules: qcode_kernel::config::resolve_schedules(&kernel.config.schedules).0,
@@ -538,7 +540,6 @@ pub(crate) async fn cmd_tui(
 
     let agents_md = qcode_core::agents::load(&workspace)?;
     let skills = kernel.skills.clone();
-    let skills_prompt = skills.prompt_section();
     let skill_views = skill_views(&skills);
     let policy = kernel.policy;
     let store = kernel.store;
@@ -560,7 +561,7 @@ pub(crate) async fn cmd_tui(
         snapshot_shell: loaded.agent.snapshot_shell,
         context_window: Some(loaded.context.window_tokens),
         agents_md,
-        skills_prompt,
+        skill_index: skills,
         skills: skill_views,
         sandbox: kernel.sandbox.clone(),
         config_path: kernel.config_path.clone(),

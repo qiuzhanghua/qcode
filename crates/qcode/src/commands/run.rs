@@ -149,7 +149,6 @@ pub(crate) async fn cmd_run(
         tracing::info!("loaded AGENTS.md from the workspace root");
     }
     let skills = kernel.skills.clone();
-    let skills_prompt = skills.prompt_section();
     let prompt = match skill {
         Some(name) => activated_prompt(&skills, &name, prompt)?,
         None if continuation && prompt.trim().is_empty() => {
@@ -350,7 +349,7 @@ pub(crate) async fn cmd_run(
             on_delta: None,
             context_window: Some(loaded.context.window_tokens),
             agents_md,
-            skills: skills_prompt,
+            skills: skills.prompt_section(),
             network: network.clone(),
             attachments,
             inbox: None,

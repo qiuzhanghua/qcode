@@ -69,7 +69,6 @@ pub(crate) async fn cmd_acp(
         kernel.config.agent.max_cost_usd,
     )?;
     let agents_md = qcode_core::agents::load(&workspace)?;
-    let skills_prompt = kernel.skills.prompt_section();
 
     tracing::info!(
         provider = %kernel.resolved.name,
@@ -96,7 +95,7 @@ pub(crate) async fn cmd_acp(
         max_cost_usd: kernel.config.agent.max_cost_usd,
         context_window: Some(kernel.config.context.window_tokens),
         agents_md,
-        skills: skills_prompt,
+        skill_index: kernel.skills,
         network: kernel.network,
         scheduler: Some(scheduler),
         driver,

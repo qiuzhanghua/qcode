@@ -13544,10 +13544,22 @@ skills = true       # 新增，Option<bool>：缺省继承 [skills] mcp
 反而引入了 ADR 里没出现过的词。同一个事实在两个方向上各有一个字段，是这张配置表的
 既有形状（`[mcp] sandbox` ↔ `[[mcp.servers]].sandbox`）。
 
-### 2. 装配时扫一次，不做热更新
+### 2. 装配时扫一次；热更新只能靠 TTL，没有 `list_changed`
 
 `extensions` 在 `initialize` 的握手响应里，`skills/list` 在同一个连接上取一次，结果并入
-`SkillSet`。**不订阅 `notifications/skills/list_changed`**（SDK 有，P1 再说）。
+`SkillSet`。
+
+**勘误（2026-11-28）**：原文写「不订阅 `notifications/skills/list_changed`（SDK 有，P1
+再说）」——两句都不对。SEP-2640 草案全文没有 `list_changed`/`listChanged`；rmcp 3.9.0 也
+没有这个通知类型，`ClientHandler` 只有 tools / resources / prompts 的钩子。规格给的唯一
+新鲜度机制是 `ListSkillsResult` 继承 `CacheableResult` 带来的 **`ttlMs` + `cacheScope`**
+（SEP-2549），原文是「a freshness hint for the listing and a cache-scope marker, not an
+integrity property」。
+
+因此 P1 的「热更新」按 TTL 实现：首次 `skills/list` 记下每台 server 的 `ttlMs`，过期后
+重发一次 `skills/list`（只列元数据，不碰文件，不违反 `MUST NOT retrieve files ahead of
+need`），`SkillIndex::replace_served` 抬 revision，下一轮 prompt 自然是新的。`ttlMs` 缺省
+（老协议版本）就不自动刷新。
 
 理由不是懒：`SkillSet` 现在是 `Arc<SkillSet>`，不可变，只有 `discover` / `get` / `len` /
 `is_empty`；而 `prompt_section()` 的输出在**五个前端各缓存成 `String`**——
@@ -13686,7 +13698,7 @@ ADR 范围内，但它是上面那条链能成立的原因，单独立项查（�
 | 档 | 内容 | 为什么在这一档 |
 |---|---|---|
 | **P0** | 读 `extensions` 判 `supports_skills`；`skills/list` 并入索引（`SkillSource::Mcp`）；正文按需 `skills/get` + `resources/read` + `verify`；每服务器默认关；**装配时扫一次** | 缺了任何一项，「能声明 skill 的服务器」在 qcode 里就等于不存在。这五项合起来才是一个最小可用单元 |
-| **P1** | `list_changed` 热更新；界面来源徽章（要动会话日志 schema v12） | 都要穿透五个前端缓存或改 schema。收益是「会话中途加 skill 立刻可见」和「人能看见来源」——真实的收益，但可以等 |
+| **P1** | **TTL 驱动的索引刷新**（原文误写成 `list_changed`，见 §2 勘误）；界面来源徽章（要动会话日志 schema v12） | 都要穿透前端缓存或改 schema。收益是「会话中途加 skill 可见」和「人能看见来源」——真实的收益，但可以等 |
 | **P2** | `directory_read` / 捆绑脚本执行 | 本地 skill 的脚本今天也不执行（ADR-0004 §3），远程的不该比本地的更宽松。这一档不是「没做」，是「不该先做」 |
 
 **被否决的替代方案**
@@ -13969,7 +13981,11 @@ P0 按修订后的范围落地：`crates/qcode-tools/src/skills.rs`（身份、�
   内容绑定」本身是该让模型看见的信息。
 - 内容绑定：**没有授权缓存**，冻结在「清单即绑定」这一层（见上面表格）。不新增任何授权
   点，`policy.rs` 一行未改。
-- 不做的仍是 P1/P2：`list_changed` 热更新、界面来源徽章、`directory_read`、捆绑脚本、
-  磁盘缓存。
+- 不做的仍是 P1/P2：界面来源徽章（schema v13）、`directory_read`、捆绑脚本、磁盘缓存。
+- **热更新（P1，2026-11-28 补做）**：SEP-2640 没有 `list_changed` 通知（见 §2 勘误），
+  所以按 `ttlMs` 刷新：`qcode-mcp` 把每页的 `ttlMs` 带出来（取最小），kernel 起一个
+  `spawn_skill_refresh` 任务（持有 `Weak<SkillIndex>`，会话结束自然退出），到期重列该
+  server 并 `replace_served`；失败保留旧条目。前端不再缓存渲染好的字符串，改成每回合
+  从索引读（`qcd`、`qc run`、TUI、GUI、ACP 五处），于是 revision 一跳下一轮就可见。
 - 真实服务器：截至落地仍无已发布实现（`github-mcp-server#3046` 未合并），验收用的是按
   conformance 客户端场景形状写的 stub（`crates/qcode-kernel/tests/mcp_skills.rs`）。

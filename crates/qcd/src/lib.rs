@@ -156,7 +156,6 @@ pub struct Daemon {
     identity: String,
     /// 项目规矩（`AGENTS.md`）与 skills 提示，装配时算一次。
     agents_md: Option<String>,
-    skills: Option<String>,
     /// 墙钟。生产是 [`SystemClock`]，测试可换。
     clock: Box<dyn WallClock>,
     /// 任务没指定 cwd 时的回落目录：进程启动时所在目录。
@@ -181,7 +180,6 @@ impl Daemon {
         // [`launch_workspace`]）。
         let workspace = assembled.workspace.clone();
         let agents_md = qcode_core::agents::load(&workspace).ok().flatten();
-        let skills = assembled.skills.prompt_section();
         Self {
             assembled,
             driver: ScheduleDriver::new(qcode_driver::runtime::Clock::new(beat)),
@@ -189,7 +187,6 @@ impl Daemon {
             starting: HashSet::new(),
             identity,
             agents_md,
-            skills,
             clock,
             workspace,
             sink: Box::new(qcode_driver::events::Noop),
@@ -213,7 +210,6 @@ impl Daemon {
     pub fn reload(&mut self, assembled: Assembled) {
         self.workspace = assembled.workspace.clone();
         self.agents_md = qcode_core::agents::load(&self.workspace).ok().flatten();
-        self.skills = assembled.skills.prompt_section();
         self.assembled = assembled;
     }
 
@@ -346,7 +342,9 @@ impl Daemon {
                 // `AGENTS.md` 与 skills 让无人值守的回合也守同一套项目规矩——
                 // 少了它们，定时任务会做出与前台回合不一样的事。
                 agents_md: self.agents_md.clone(),
-                skills: self.skills.clone(),
+                // Re-read per turn: a TTL refresh can add a skill mid-session
+                // (ADR-0108 §2), and a cached string would hide it.
+                skills: self.assembled.skills.prompt_section(),
                 network: self.assembled.network.clone(),
                 attachments: Vec::new(),
                 inbox: None,

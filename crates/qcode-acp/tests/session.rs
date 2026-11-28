@@ -193,7 +193,9 @@ fn fixture_with(provider: MockProvider, tools: ToolRegistry, calls: Arc<AtomicUs
         max_cost_usd: None,
         context_window: None,
         agents_md: None,
-        skills: None,
+        skill_index: std::sync::Arc::new(qcode_tools::skills::SkillIndex::new(
+            qcode_tools::skills::SkillSet::default(),
+        )),
         network: None,
         snapshot_shell: true,
         scheduler: None,

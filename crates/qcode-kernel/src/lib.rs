@@ -65,6 +65,7 @@ pub fn build_policy(
 }
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use qcode_net::{Egress, EgressOptions, UnknownPolicy};
 
@@ -463,7 +464,7 @@ pub async fn collect_served_skills(
     if allowed.is_empty() {
         return Vec::new();
     }
-    let (skills, errors) = source.list_skills(&allowed).await;
+    let (listings, errors) = source.list_skills(&allowed).await;
     for error in errors {
         tracing::warn!(
             server = %error.server,
@@ -471,7 +472,103 @@ pub async fn collect_served_skills(
             "a server's skills are not in the index"
         );
     }
-    skills
+    listings
+        .into_iter()
+        .flat_map(|listing| listing.skills)
+        .collect()
+}
+
+/// The listings, plus each server's freshness hint.
+///
+/// The hint is what the refresher sleeps on: SEP-2640 has no `list_changed`
+/// notification, so `ttlMs` is the only signal a server can give that its
+/// catalogue moved (ADR-0108 §2).
+pub async fn collect_served_skill_listings(
+    connection: &qcode_mcp::McpConnection,
+    mcp: &McpConfig,
+    default_allowed: bool,
+) -> (Vec<qcode_mcp::ServedSkill>, Vec<(String, Option<u64>)>) {
+    let Some(source) = connection.source.as_ref() else {
+        return (Vec::new(), Vec::new());
+    };
+    let allowed = skill_allowed_servers(mcp, default_allowed);
+    if allowed.is_empty() {
+        return (Vec::new(), Vec::new());
+    }
+    let (listings, errors) = source.list_skills(&allowed).await;
+    for error in errors {
+        tracing::warn!(
+            server = %error.server,
+            message = %error.message,
+            "a server's skills are not in the index"
+        );
+    }
+    let mut ttls = Vec::new();
+    let mut skills = Vec::new();
+    for listing in listings {
+        ttls.push((listing.server.clone(), listing.ttl_ms));
+        skills.extend(listing.skills);
+    }
+    (skills, ttls)
+}
+
+/// Re-list one server every time its advertised TTL runs out (ADR-0108 §2).
+///
+/// Public so the ADR-0108 §2 test can drive it without assembling a whole
+/// session; `assemble` is the only production caller.
+///
+/// The session's `SkillIndex` is held weakly: when the session ends the index
+/// drops and the task exits at its next tick. A failed re-list keeps the old
+/// entries — a server that is briefly unavailable must not make its skills
+/// disappear from the prompt (the model would lose a capability mid-session for
+/// a transient reason).
+pub fn spawn_skill_refresh(
+    source: Arc<qcode_mcp::McpToolSource>,
+    ttls: Vec<(String, Option<u64>)>,
+    index: Arc<SkillIndex>,
+) {
+    let Ok(handle) = tokio::runtime::Handle::try_current() else {
+        // No runtime (a synchronous caller): the listing is a snapshot, which is
+        // exactly what a one-shot command wants anyway.
+        return;
+    };
+    for (server, ttl_ms) in ttls {
+        let Some(mut delay) = ttl_ms.filter(|ms| *ms > 0).map(Duration::from_millis) else {
+            continue;
+        };
+        let source = source.clone();
+        let weak = Arc::downgrade(&index);
+        handle.spawn(async move {
+            loop {
+                tokio::time::sleep(delay).await;
+                let Some(index) = weak.upgrade() else {
+                    return;
+                };
+                let only = std::collections::BTreeSet::from([server.clone()]);
+                let (listings, errors) = source.list_skills(&only).await;
+                for error in &errors {
+                    tracing::warn!(
+                        server = %error.server,
+                        message = %error.message,
+                        "skills refresh failed; keeping the previous listing"
+                    );
+                }
+                if let Some(listing) = listings.into_iter().find(|item| item.server == server) {
+                    let served = served_skills(listing.skills);
+                    let revision = index.replace_served(&server, served);
+                    tracing::info!(
+                        server = %server,
+                        revision,
+                        "skills refreshed after their ttl"
+                    );
+                    if let Some(ttl) = listing.ttl_ms.filter(|ms| *ms > 0) {
+                        delay = Duration::from_millis(ttl);
+                    }
+                }
+                drop(index);
+            }
+        });
+    }
 }
 
 /// Build the index entries from what the servers listed.
@@ -870,7 +967,7 @@ pub async fn assemble(
     let mcp = connect_mcp(&loaded.mcp, cwd, &data_dir, sandbox.clone(), &wiring).await;
     // ADR-0108 §2: the index is built from the same connection, so a served
     // skill and the tool that loads it always come from one handshake.
-    let served = collect_served_skills(&mcp, &loaded.mcp, loaded.skills.mcp).await;
+    let (served, ttls) = collect_served_skill_listings(&mcp, &loaded.mcp, loaded.skills.mcp).await;
     // One index per session: `SkillSet` stays the immutable value it always
     // was, and the index is what lets a later `list_changed` swap one server's
     // contribution without rebuilding this assembly (ADR-0108 P1).
@@ -881,6 +978,12 @@ pub async fn assemble(
         (*local).clone().with_served(served_skills(served))
     };
     let skills = Arc::new(SkillIndex::new(set));
+    // SEP-2640 defines no `list_changed` notification; a server's `ttlMs` is the
+    // only hint that its catalogue moved. Refresh on that hint, and let the
+    // revision bump tell the next turn that the prompt changed.
+    if let Some(source) = mcp.source.clone() {
+        spawn_skill_refresh(source, ttls, skills.clone());
+    }
     let tools = build_tools(mcp, &loaded.search, &skills, sandbox, shell_env.clone()).await;
     let store = qcode_core::store::SessionStore::new(data_dir);
     Ok(Assembled {

@@ -55,8 +55,9 @@ pub struct TuiOptions<'a> {
     pub max_turns: u32,
     pub context_window: Option<u64>,
     pub agents_md: Option<String>,
-    /// Rendered `# Skills` index for the system prompt.
-    pub skills_prompt: Option<String>,
+    /// The session's skills. The index is read when a turn is built, not once at
+    /// startup: a TTL refresh can add a skill mid-session (ADR-0108 §2).
+    pub skill_index: Arc<qcode_tools::skills::SkillIndex>,
     /// Skills for the local `/skills` debug command.
     pub skills: Vec<SkillView>,
     /// Active sandbox backend name, shown in the status bar.
@@ -489,7 +490,7 @@ pub async fn run(options: TuiOptions<'_>) -> Result<(), Box<dyn std::error::Erro
                     })),
                     context_window: options.context_window,
                     agents_md: options.agents_md.clone(),
-                    skills: options.skills_prompt.clone(),
+                    skills: options.skill_index.prompt_section(),
                     network: options.network.clone(),
                     attachments,
                     inbox: Some(task_inbox),
