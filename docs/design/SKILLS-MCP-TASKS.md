@@ -63,7 +63,7 @@ ADR §2 记了成本：`SkillSet` 现在是不可变 `Arc`，而 `prompt_section
 | **C1** ✅ | `SkillIndex` 句柄 | `Arc<SkillSet>` → `Arc<SkillIndex>`：内部 `RwLock<SkillSet>` + `AtomicU64 revision`；新增 `section()` / `replace_served()` / owned 的 `resolve()`；`prompt_section()` 保留给 C2 之前的调用点 | 单测：替换只动目标服务器、revision 递增、替换同样受 limits 约束 | M（~260 行） |
 | **C2** ✅ | 前端不再缓存渲染好的字符串 | `qcd`、`qc run`、TUI、GUI、ACP 五处都改成**每回合从索引读**（`SkillIndex::prompt_section()`）。比「存 (revision, String)」更简单：一次小字符串构造，永远最新 | 五处编译通过 + 全量测试；TTL 测试断言 prompt 里出现新 skill | M（~90 行，7 个文件） |
 | **C3** ✅ | **改为 TTL 驱动**（`list_changed` 在 SEP-2640 与 rmcp 3.9.0 里都不存在，见 ADR §2 勘误） | `qcode-mcp` 的 `list_skills` 返回 `ServerSkillListing`（含 `ttl_ms`）；kernel 的 `spawn_skill_refresh` 按 TTL 重列该 server 并 `replace_served`，失败保留旧条目 | stub 支持 `MCP_STUB_SKILL_TTL_MS` / `MCP_STUB_SKILL_ROTATE`；`mcp_skills.rs::a_servers_ttl_refresh_reaches_the_index` | M（~150 行 + 1 个测试） |
-| **C4** | 会话一致性验证 | 场景测试：第 1 轮看到 1 个 skill，第 2 轮 server 加 1 个，断言第 3 轮 prompt 里是 2 个且无重复 | `kernel/tests/mcp_skills.rs` 新增一条 | S |
+| **C4** ✅ | 会话一致性验证 | `qcode-providers/tests/skill_index_turns.rs`：两轮真实 `run_turn`，中间 `replace_served` 加一个 skill；用 `MockProvider.requests()` 断言第 1 轮 system prompt 没有它、第 2 轮有 | `cargo test -p qcode-providers --test skill_index_turns` | S |
 
 ### D. P1：第三方内容的来源徽章（要动 schema）
 
