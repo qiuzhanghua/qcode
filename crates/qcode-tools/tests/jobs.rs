@@ -96,7 +96,24 @@ fn the_two_budgets_are_the_agreed_numbers() {
     assert_eq!(qcode_tools::shell::DEFAULT_WAIT_SECS, 60);
     assert_eq!(
         qcode_tools::jobs::MAX_LIFETIME,
-        Duration::from_secs(120 * 60)
+        Duration::from_secs(4 * 60 * 60)
+    );
+}
+
+/// A long poll must be able to time out *before* the job dies, or the one state
+/// it exists to produce — 「nothing yet, still running, ask again」 — is
+/// unreachable and every full-budget wait ends by reporting `Expired`.
+///
+/// The two constants are related in the source (`MAX_LIFETIME` is defined as
+/// twice `MAX_WAIT`), so this test is the guard that the relationship stays a
+/// *strict* inequality if either literal is ever edited back.
+#[test]
+fn a_wait_can_time_out_while_the_job_is_still_running() {
+    assert!(
+        qcode_tools::jobs::MAX_WAIT < qcode_tools::jobs::MAX_LIFETIME,
+        "MAX_WAIT {:?} must be strictly below MAX_LIFETIME {:?}",
+        qcode_tools::jobs::MAX_WAIT,
+        qcode_tools::jobs::MAX_LIFETIME
     );
 }
 

@@ -6,8 +6,8 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-qcode-core = { version = "0.22.0", path = "../qcode-core" }
-qcode-i18n = { version = "0.22.0", path = "../qcode-i18n" }
+qcode-core = { version = "0.22.1", path = "../qcode-core" }
+qcode-i18n = { version = "0.22.1", path = "../qcode-i18n" }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
@@ -22,7 +22,7 @@ sha2.workspace = true
 getrandom.workspace = true
 
 [dev-dependencies]
-qcode-net = { version = "0.22.0", path = "../qcode-net" }
-qcode-attachments = { version = "0.22.0", path = "../qcode-attachments" }
-qcode-tools = { version = "0.22.0", path = "../qcode-tools" }
+qcode-net = { version = "0.22.1", path = "../qcode-net" }
+qcode-attachments = { version = "0.22.1", path = "../qcode-attachments" }
+qcode-tools = { version = "0.22.1", path = "../qcode-tools" }
 tempfile.workspace = true

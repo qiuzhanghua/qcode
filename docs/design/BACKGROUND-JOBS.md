@@ -71,9 +71,13 @@ run_shell {command: "npm run dev", background: true}  → 立刻返回 job 句�
   （`Running` / `Exited(码)` / `Killed` / `Expired`）、每流的已产出字节数、缓冲。
 
 **上限三个**：同时存活 16 个（超过就拒绝并让模型先 `job_kill`）；单任务寿命
-**120 分钟**（到点整组 `SIGTERM`→`SIGKILL`，状态记 `Expired`，`job_read` 里说明是
+**240 分钟**（到点整组 `SIGTERM`→`SIGKILL`，状态记 `Expired`，`job_read` 里说明是
 寿命到点）；已结束的任务只留最近 8 个供查询，更早的按「没有这个任务」回答。
 没有上限的话，「转后台」等于「泄漏」。
+
+寿命是 `MAX_WAIT`（`job_read` 一次最长等 120 分钟）的**两倍**，代码里就是这么定义的
+（`MAX_LIFETIME = MAX_WAIT * 2`）。这条不等式有含义：长轮询必须在任务死之前有机会超时，
+否则它唯一能产出的状态「还没输出、还活着、再问一次」就不可达，每次都只能等到 `Expired`。
 
 ### 3.3 输出：每流一条环形缓冲，各一个单调游标
 
@@ -96,7 +100,7 @@ run_shell {command: "npm run dev", background: true}  → 立刻返回 job 句�
 | 参数 | 含义 |
 |---|---|
 | `job` | 句柄 |
-| `wait_secs` | 可选，最长等多久（`0`–`120`，默认 `0` = 立刻返回） |
+| `wait_secs` | 可选，最长等多久（`0`–`7200`，默认 `0` = 立刻返回） |
 
 在有新输出、或任务退出、或超过 `wait_secs` 时返回。于是「等这个构建结束」是**一次**
 工具调用。`wait_secs` 的值会被 `ToolContext::cancel` 打断（用户取消 → 立刻返回，不杀任务）。
@@ -207,7 +211,8 @@ supervise ── wait ──▶ 相位 + done ┴── wait_done ── job_kil
 | `job_kill` 对合作进程 <1s，对忽略 TERM 的升级到 SIGKILL | `…::job_kill_returns_as_soon_as_the_process_is_gone`、`…::job_kill_escalates_when_the_process_ignores_sigterm` |
 | 第 17 个任务被拒，前 16 个不受影响 | `…::the_seventeenth_live_job_is_refused` |
 | 冲掉的字节如实上报 | `…::eviction_is_reported_rather_than_hidden` |
-| 两个预算就是 60s / 120 分钟 | `…::the_two_budgets_are_the_agreed_numbers` |
+| 两个预算就是 60s / 240 分钟 | `…::the_two_budgets_are_the_agreed_numbers` |
+| 长轮询能在任务死之前超时 | `…::a_wait_can_time_out_while_the_job_is_still_running` |
 | 退出即全杀 | `crates/qcode-tools/tests/jobs_exit.rs::quitting_kills_background_jobs` |
 | 杀任务/读被杀的任务都不结束回合；`Cancelled` 专属「回合取消」 | `crates/qcode-providers/tests/job_turn.rs`（三条） |
 

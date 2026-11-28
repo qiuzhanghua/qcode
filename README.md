@@ -1,7 +1,7 @@
 # qcode
 
 Rust 实现的 coding agent，共享 kernel，提供 TUI、GPUI 桌面 GUI 与 ACP 接入。
-**当前版本：v0.22.0**。设计决策见 [docs/design/DECISIONS.md](docs/design/DECISIONS.md)，
+**当前版本：v0.22.1**。设计决策见 [docs/design/DECISIONS.md](docs/design/DECISIONS.md)，
 GUI 形态见 [docs/design/GUI-V3.md](docs/design/GUI-V3.md)。
 
 > 与 OpenAI / Anthropic / Google 无关联。产品名 qcode，命令名 qc。
@@ -321,8 +321,8 @@ GitHub 已经在跑 CI 而 gitee 还可能因为网络或被拒而失败，于�
 写地址，别依赖那个配置：
 
 ```bash
-git push git@gitee.com:opentj/qcode.git main v0.22.0   # 1. gitee，失败即停
-git push gh main v0.22.0                               # 2. GitHub，触发 CI / 发布
+git push git@gitee.com:opentj/qcode.git main v0.22.1   # 1. gitee，失败即停
+git push gh main v0.22.1                               # 2. GitHub，触发 CI / 发布
 ```
 
 推完两端用 `git ls-remote` 确认指向同一个 commit：
@@ -556,7 +556,7 @@ cargo build -p qcode-eval
 - **后台任务**：`run_shell` 的前台等待预算是 60s（`timeout_secs`，1–600，可按命令调），
   到点不再杀——命令转后台继续跑，返回 `job-N` 句柄。`job_read` 读「上次之后」的输出
   （可带 `wait_secs` 长轮询），`job_list` 列存活与最近结束的，`job_kill` 整组收掉。
-  单任务寿命 120 分钟、同时最多 16 个；qcode 退出时后台任务一起死（ADR-0106）。
+  单任务寿命 240 分钟、同时最多 16 个；qcode 退出时后台任务一起死（ADR-0106）。
 - **审批**：三值策略（allow / ask / deny），规则匹配工具名、命令前缀与路径 glob；
   `deny` 永远优先，其余按「最具体者胜」——**精确工具名 > 通配 > 无条件**，与规则在文件里的
   先后无关，所以一条 `mcp__*` 不会盖掉一条精确的 `deny`。每次决策写事件，含命中的 rule id。
@@ -816,7 +816,7 @@ cargo build -p qcode-eval
   用 brew / scoop / winget 装的那份交给包管理器升级，别用 `qc update` 覆盖它——
   包管理器会认为文件被改过。更新器只服务「自己从 Releases 下载的裸二进制」。
 
-v0.22.0 状态：一个窗口程序 `qc`（终端里 `qc tui` 进 TUI、点图标是窗口，ADR-0086/0089）、
+v0.22.1 状态：一个窗口程序 `qc`（终端里 `qc tui` 进 TUI、点图标是窗口，ADR-0086/0089）、
 一个常驻驱动 `qcd`（无窗口，只服务定时任务，与 `qc` 同目录发布；段头那颗幽灵图标
 绿色＝它在跑、灰色＝没在跑，点一下启停，ADR-0100）、
 定时任务的建法：跟 agent 说一句，或 `qc schedule create`（入口取舍见 ADR-0097）、

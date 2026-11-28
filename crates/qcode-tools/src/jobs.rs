@@ -36,6 +36,13 @@
 //! at most [`MAX_WAIT`] — so the cost is nil, while a `Notify`-based design has
 //! to get `enable()`-before-check exactly right in two places (append and phase
 //! change) to avoid a lost wakeup that shows up as a hang.
+//!
+//! "Nil" is worth a number now that the ceiling is two hours rather than two
+//! minutes: 20ms polling over 7200s is ~360,000 iterations, each one a lock, an
+//! emptiness check and a timer sleep — tens of milliseconds of CPU spread over
+//! the whole wait, and only for a job that is saying nothing. Every wakeup that
+//! does find output ends the wait immediately. If this ever becomes real, the
+//! fix is a larger [`POLL`] for long waits, not `Notify`.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
@@ -57,11 +64,18 @@ pub const MAX_LIVE: usize = 16;
 /// How long a job may run before the registry kills it.
 ///
 /// The backstop for everything the model forgets: a `tail -f`, a dev server, a
-/// command waiting on a socket. It is not a limit on the work — two hours is
+/// command waiting on a socket. It is not a limit on the work — four hours is
 /// longer than any build worth keeping — it is the answer to "what if nobody
-/// ever reads this job again", and it is deliberately far above the wait budget
-/// (`run_shell` hands a command over after 60s; this is when the *job* ends).
-pub const MAX_LIFETIME: Duration = Duration::from_secs(120 * 60);
+/// ever reads this job again".
+///
+/// Defined as **twice [`MAX_WAIT`]** rather than as a literal, so the two can
+/// never quietly become equal: a long poll waits at most half as long as a job
+/// can live, which is what makes 「the wait timed out, the job is still going,
+/// ask again」 a state that exists. (When they were both two hours, a poll could
+/// only ever time out *as* the job expired — the outcome the wait was for was
+/// unreachable.) The 60s foreground budget `run_shell` uses before handing a
+/// command over is what keeps the small end far from both.
+pub const MAX_LIFETIME: Duration = Duration::from_secs(MAX_WAIT.as_secs() * 2);
 
 /// Bytes kept per stream once a job is detached. Older bytes are evicted and
 /// counted, never silently forgotten.
@@ -71,7 +85,18 @@ pub const STREAM_CAP: usize = 512 * 1024;
 pub const READ_LIMIT: usize = 32 * 1024;
 
 /// Longest a single `job_read` may block.
-pub const MAX_WAIT: Duration = Duration::from_secs(120);
+///
+/// Two hours. It is deliberately **half** of [`MAX_LIFETIME`], which is
+/// expressed in the other direction (that constant is defined from this one), so
+/// a long poll always has a state to report other than 「the job expired while
+/// you waited」: either new output arrived, or the job ended, or the wait ran
+/// out with the job still running and the model can ask again.
+///
+/// The wait ends early whenever there is new output, which is the common case (a
+/// build prints constantly). The full budget is only spent by a job that says
+/// nothing at all, and `ToolContext::cancel` (the Stop button) interrupts the
+/// wait without killing the job.
+pub const MAX_WAIT: Duration = Duration::from_secs(120 * 60);
 
 /// How many finished jobs stay queryable.
 pub const MAX_FINISHED: usize = 8;
