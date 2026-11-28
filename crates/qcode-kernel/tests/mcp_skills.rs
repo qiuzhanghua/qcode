@@ -318,3 +318,51 @@ async fn a_servers_ttl_refresh_reaches_the_index() {
         "a refresh duplicated the skill that did not change: {section}"
     );
 }
+
+/// SEP-2640 allows a partial (or empty) listing, and a server's `instructions`
+/// may point at a skill URI directly. That skill must still be loadable — the
+/// entry comes from `skills/get`, and its digests are what the body is
+/// verified against (ADR-0108 §4).
+#[tokio::test]
+async fn a_skill_missing_from_the_listing_loads_by_uri() {
+    let workspace = workspace("uri_load");
+    let mut server = declaring_server(Some(true)).1;
+    server
+        .env
+        .insert("MCP_STUB_SKILL_LIST_EMPTY".to_string(), "1".to_string());
+    let connection = connect(&workspace, server).await;
+
+    let config = McpConfig {
+        servers: vec![McpServerConfig {
+            name: "probe".to_string(),
+            skills: Some(true),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let (served, _ttls) =
+        qcode_kernel::collect_served_skill_listings(&connection, &config, false).await;
+    assert!(
+        served.is_empty(),
+        "the stub lists nothing, which a host must not read as 'no skills'"
+    );
+
+    let index = Arc::new(SkillIndex::new(SkillSet::default()));
+    let source = connection.source.clone().expect("a connected server");
+    let reader: Arc<dyn qcode_tools::skills::RemoteSkillReader> =
+        qcode_kernel::mcp_skill_reader(source);
+    let tool = SkillTool::with_reader(index.clone(), reader);
+    let context = ToolContext::for_test(&workspace);
+
+    let output = tool
+        .execute(&context, json!({"uri": SKILL_URI, "source": "mcp:probe"}))
+        .await
+        .expect("a listed-nowhere skill should load by uri");
+    assert!(output.output.contains("Probe body."), "{}", output.output);
+    assert!(
+        output.output.contains("Source: mcp:probe"),
+        "{}",
+        output.output
+    );
+    assert_eq!(output.metadata.source.as_deref(), Some("mcp:probe"));
+}

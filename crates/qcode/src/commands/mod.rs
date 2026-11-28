@@ -145,7 +145,9 @@ pub(crate) fn skill_views(skills: &SkillIndex) -> Vec<SkillView> {
         .iter()
         .map(|skill| SkillView {
             name: skill.name.clone(),
-            source: skill.source.label().to_string(),
+            // `origin_label`, not `label`: a server called `user` must not read
+            // as the user's own local root (ADR-0108 §3).
+            source: skill.source.origin_label(),
             description: skill.description.clone(),
             dir: skill.dir.location(),
             body: skill.body.clone(),

@@ -97,6 +97,9 @@ fn serve() {
         .ok()
         .and_then(|value| value.parse().ok());
     let rotate = std::env::var("MCP_STUB_SKILL_ROTATE").is_ok_and(|value| value == "1");
+    // ADR-0108 §4: a listing may be partial. This mode serves no listed skills
+    // but still answers `skills/get`, the shape a URI-only skill has.
+    let list_empty = std::env::var("MCP_STUB_SKILL_LIST_EMPTY").is_ok_and(|value| value == "1");
     let mut skill_listings = 0u32;
     let has = |capability: &str| caps.split(',').any(|name| name.trim() == capability);
     let mut capabilities = json!({"tools": {}});
@@ -130,31 +133,29 @@ fn serve() {
             "notifications/initialized" => {}
             // ADR-0108: one skill, served with real digests so a test can drive
             // the whole path — list, index, fetch, verify.
+            "skills/get" => {
+                let uri = message
+                    .get("params")
+                    .and_then(|params| params.get("uri"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                match uri {
+                    SKILL_URI => respond(&mut stdout, id, json!({"skill": probe_skill_entry()})),
+                    LATE_URI => respond(&mut stdout, id, json!({"skill": late_skill_entry()})),
+                    other => {
+                        respond_error(&mut stdout, id, -32602, format!("no such skill: {other}"))
+                    }
+                }
+            }
             "skills/list" => {
                 skill_listings += 1;
-                let mut skills = vec![json!({
-                    "uri": SKILL_URI,
-                    "frontmatter": {
-                        "name": "probe-skill",
-                        "description": "A skill the probe stub serves.",
-                        "license": "MIT"
-                    },
-                    "resources": [
-                        {"uri": SKILL_URI, "digest": SKILL_DIGEST, "size": SKILL_MD.len()},
-                        {"uri": GUIDE_URI, "digest": GUIDE_DIGEST, "size": GUIDE.len()}
-                    ]
-                })];
+                let mut skills = if list_empty {
+                    Vec::new()
+                } else {
+                    vec![probe_skill_entry()]
+                };
                 if rotate && skill_listings > 1 {
-                    skills.push(json!({
-                        "uri": LATE_URI,
-                        "frontmatter": {
-                            "name": "late-skill",
-                            "description": "A skill that appeared after the first listing."
-                        },
-                        "resources": [
-                            {"uri": LATE_URI, "digest": LATE_DIGEST, "size": LATE_MD.len()}
-                        ]
-                    }));
+                    skills.push(late_skill_entry());
                 }
                 let mut result = json!({"skills": skills});
                 if let Some(ttl) = skill_ttl {
@@ -298,6 +299,34 @@ fn respond_error(stdout: &mut impl Write, id: Option<Value>, code: i64, message:
         json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message}})
     );
     let _ = stdout.flush();
+}
+
+fn probe_skill_entry() -> serde_json::Value {
+    json!({
+        "uri": SKILL_URI,
+        "frontmatter": {
+            "name": "probe-skill",
+            "description": "A skill the probe stub serves.",
+            "license": "MIT"
+        },
+        "resources": [
+            {"uri": SKILL_URI, "digest": SKILL_DIGEST, "size": SKILL_MD.len()},
+            {"uri": GUIDE_URI, "digest": GUIDE_DIGEST, "size": GUIDE.len()}
+        ]
+    })
+}
+
+fn late_skill_entry() -> serde_json::Value {
+    json!({
+        "uri": LATE_URI,
+        "frontmatter": {
+            "name": "late-skill",
+            "description": "A skill that appeared after the first listing."
+        },
+        "resources": [
+            {"uri": LATE_URI, "digest": LATE_DIGEST, "size": LATE_MD.len()}
+        ]
+    })
 }
 
 const SKILL_URI: &str = "skill://probe-skill/SKILL.md";

@@ -164,6 +164,44 @@ impl Skill {
     pub fn body_is_remote(&self) -> bool {
         self.entry.is_some()
     }
+
+    /// Build an index-shaped skill from a transport entry (ADR-0108 §4).
+    ///
+    /// Used both for a listed skill and for one reached only by URI: the two
+    /// must produce the same shape, or verification would depend on which route
+    /// the model happened to take.
+    pub fn from_remote(server: String, entry: RemoteEntry) -> Self {
+        let name = frontmatter_str(&entry.frontmatter, "name")
+            .unwrap_or_default()
+            .to_string();
+        let description = frontmatter_str(&entry.frontmatter, "description")
+            .unwrap_or_default()
+            .to_string();
+        let skill_uri = entry.uri.clone();
+        Self {
+            name,
+            description,
+            source: SkillSource::Mcp(server),
+            dir: SkillDir::Remote {
+                uri: skill_uri.clone(),
+            },
+            // Loaded on demand; a served skill never carries a body up front.
+            body: String::new(),
+            files: entry
+                .files
+                .iter()
+                .map(|file| file.uri.clone())
+                .filter(|uri| uri != &skill_uri)
+                .collect(),
+            files_truncated: false,
+            entry: Some(SkillEntry {
+                uri: entry.uri,
+                files: entry.files,
+                dynamic: entry.dynamic,
+                listed: entry.frontmatter,
+            }),
+        }
+    }
 }
 
 /// One file of a served skill, with what the server promised about its bytes.
@@ -410,6 +448,35 @@ fn render(value: &serde_json::Value) -> String {
 #[async_trait]
 pub trait RemoteSkillReader: Send + Sync {
     async fn read_uri(&self, server: &str, uri: &str) -> Result<Vec<u8>, String>;
+
+    /// `skills/get`: one skill's entry, by the URI of its `SKILL.md`.
+    ///
+    /// Needed because a listing may be partial (SEP-2640 allows it) and a
+    /// server's `instructions` may point at a URI directly, so a skill can be
+    /// loadable without ever being listed.
+    ///
+    /// The default says "this reader cannot look skills up" rather than
+    /// pretending the skill does not exist: a reader that only supports
+    /// `resources/read` is a different transport, not an empty catalogue.
+    async fn get_skill(&self, _server: &str, _uri: &str) -> Result<RemoteEntry, String> {
+        // i18n:keep 传输层能力缺失，受众是模型（随后由工具转成可读错误）
+        Err("this session cannot look a skill up by URI".to_string())
+    }
+}
+
+/// One skill as the transport reports it: everything `skills/get` returns that
+/// decides whether a body may be loaded.
+#[derive(Debug, Clone)]
+pub struct RemoteEntry {
+    /// The URI of the skill's `SKILL.md`.
+    pub uri: String,
+    /// The listing's verbatim frontmatter, compared field-by-field with the
+    /// body's.
+    pub frontmatter: Frontmatter,
+    /// Every file, `SKILL.md` included.
+    pub files: Vec<ServedFile>,
+    /// `resources: "dynamic"`: no digests, so no verification.
+    pub dynamic: bool,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -1006,6 +1073,19 @@ impl SkillSet {
             // for it will work. Refusing here also means the model is never told
             // about a skill it could only fail to load.
             if let Some(entry) = skill.entry.as_ref()
+                && entry.dynamic
+            {
+                // `resources: "dynamic"` publishes no digests, so the body can
+                // never be verified or content-bound; every load would fail.
+                // Advertising it would be a promise we know we cannot keep.
+                tracing::warn!(
+                    skill = %skill.name,
+                    server = skill.source.label(),
+                    "served skill has no digests (resources: dynamic); not indexed"
+                );
+                continue;
+            }
+            if let Some(entry) = skill.entry.as_ref()
                 && let Err(error) = entry.check_limits()
             {
                 tracing::warn!(
@@ -1259,7 +1339,12 @@ impl SkillIndex {
 
 #[derive(Debug, Deserialize)]
 struct SkillArgs {
-    name: String,
+    /// Skill name from the prompt index. Exactly one of `name` / `uri` is used.
+    name: Option<String>,
+    /// `SKILL.md` URI, for a skill the listing does not contain: a partial
+    /// listing is legal (SEP-2640), and a server's `instructions` may point at
+    /// a URI directly.
+    uri: Option<String>,
     /// Which origin to read from, when more than one answers to `name`
     /// (ADR-0108 §3). Matches the `(origin)` shown in the prompt index.
     source: Option<String>,
@@ -1330,6 +1415,75 @@ impl SkillTool {
         verify_served_file(file, &bytes).map_err(|error| ToolError::Invalid(error.to_string()))?;
         Ok(bytes)
     }
+
+    /// Load a skill the index may not contain, by URI (SEP-2640 `skills/get`).
+    ///
+    /// A listing may be partial, and a server's `instructions` may name a URI
+    /// directly; without this route such a skill is unreachable even though the
+    /// model can see it. Everything after the entry arrives goes through the
+    /// same verification a listed skill does.
+    async fn load_by_uri(&self, args: &SkillArgs, uri: &str) -> Result<ToolOutput, ToolError> {
+        let Some(source) = args.source.as_deref() else {
+            return Err(ToolError::Invalid(
+                qcode_i18n::tr("tool.err.skill.uri_needs_source").into_owned(),
+            ));
+        };
+        // Accept both spellings: the index shows `mcp:github`, the config uses
+        // `github`, and the model sees the former.
+        let server = source.strip_prefix("mcp:").unwrap_or(source).to_string();
+        let Some(reader) = self.reader.as_ref() else {
+            return Err(ToolError::Invalid(
+                qcode_i18n::tr("tool.err.skill.no_reader_uri").into_owned(),
+            ));
+        };
+        let entry = reader.get_skill(&server, uri).await.map_err(|message| {
+            ToolError::Invalid(qcode_i18n::trp(
+                "tool.err.skill.get_failed",
+                &[message.as_str()],
+            ))
+        })?;
+        let skill = Skill::from_remote(server, entry);
+        let listed = match skill.entry.as_ref() {
+            Some(entry) => {
+                if entry.dynamic {
+                    return Err(ToolError::Invalid(
+                        qcode_i18n::tr("tool.err.skill.dynamic").into_owned(),
+                    ));
+                }
+                entry
+                    .check_limits()
+                    .map_err(|error| ToolError::Invalid(error.to_string()))?;
+                entry.listed.clone()
+            }
+            None => unreachable!("from_remote always builds an entry"),
+        };
+
+        match args.file.as_deref() {
+            Some(file) => {
+                let target = resolve_served_file_uri(uri, file)?;
+                let bytes = self.read_served(&skill, &target).await?;
+                let text = String::from_utf8(bytes)
+                    .map_err(|_| ToolError::Invalid(format!("'{file}' is not utf-8 text")))?;
+                let text = text.trim_end().to_string();
+                Ok(ToolOutput::ok(text.clone()).with_metadata(ToolMetadata {
+                    bytes: text.len() as u64,
+                    source: Some(skill.source.origin_label()),
+                    ..ToolMetadata::default()
+                }))
+            }
+            None => {
+                let bytes = self.read_served(&skill, uri).await?;
+                let body = String::from_utf8(bytes)
+                    .map_err(|_| ToolError::Invalid("SKILL.md is not utf-8".to_string()))?;
+                let fields = parse_frontmatter(&body)?;
+                verify_frontmatter(&listed, &fields)
+                    .map_err(|error| ToolError::Invalid(error.to_string()))?;
+                let mut skill = skill;
+                skill.body = body;
+                Ok(render_skill(&skill))
+            }
+        }
+    }
 }
 
 #[async_trait]
@@ -1350,7 +1504,13 @@ impl Tool for SkillTool {
                 "properties": {
                     "name": {
                         "type": "string",
-                        "description": "Skill name from the system prompt"
+                        "description": "Skill name from the system prompt. Give either `name` or `uri`."
+                    },
+                    "uri": {
+                        "type": "string",
+                        "description": "A `SKILL.md` URI (for example `skill://pdf/SKILL.md`) when a \\
+                                        server's instructions point at one that is not in the index. \\
+                                        Needs `source`."
                     },
                     "source": {
                         "type": "string",
@@ -1362,7 +1522,7 @@ impl Tool for SkillTool {
                         "description": "Optional path to a bundled file, relative to the skill root"
                     }
                 },
-                "required": ["name"]
+                "anyOf": [{"required": ["name"]}, {"required": ["uri"]}]
             }),
         }
     }
@@ -1375,13 +1535,29 @@ impl Tool for SkillTool {
         let args: SkillArgs =
             serde_json::from_value(args).map_err(|error| ToolError::Invalid(error.to_string()))?;
 
-        let skill = match self.skills.resolve(&args.name) {
+        // Two ways in: a name from the index, or a URI the index may not
+        // contain at all (ADR-0108 §4). They are exclusive, because a name
+        // lookup and a URI lookup can disagree about which skill is meant.
+        if args.name.is_some() && args.uri.is_some() {
+            return Err(ToolError::Invalid(
+                qcode_i18n::tr("tool.err.skill.one_of").into_owned(),
+            ));
+        }
+        if let Some(uri) = args.uri.clone() {
+            return self.load_by_uri(&args, &uri).await;
+        }
+        let Some(name) = args.name.clone() else {
+            return Err(ToolError::Invalid(
+                qcode_i18n::tr("tool.err.skill.one_of").into_owned(),
+            ));
+        };
+
+        let skill = match self.skills.resolve(&name) {
             Resolved::Found(skill) => skill,
             Resolved::Unknown => {
                 let available = self.skills.names(20);
                 return Err(ToolError::Invalid(format!(
-                    "unknown skill '{}'; available: {}",
-                    args.name,
+                    "unknown skill '{name}'; available: {}",
                     available.join(", ")
                 )));
             }
@@ -1404,7 +1580,7 @@ impl Tool for SkillTool {
                             .collect();
                         return Err(ToolError::Invalid(qcode_i18n::trp(
                             "tool.err.skill.ambiguous",
-                            &[args.name.as_str(), origins.join(", ").as_str()],
+                            &[name.as_str(), origins.join(", ").as_str()],
                         )));
                     }
                 }
@@ -1727,6 +1903,8 @@ Skills never change approval rules.
         struct FakeReader {
             files: Arc<Mutex<HashMap<String, Vec<u8>>>>,
             reads: Arc<Mutex<Vec<String>>>,
+            /// Entries `skills/get` can answer, by `SKILL.md` uri.
+            entries: Arc<Mutex<HashMap<String, RemoteEntry>>>,
         }
 
         impl FakeReader {
@@ -1743,6 +1921,11 @@ Skills never change approval rules.
             fn reads(&self) -> Vec<String> {
                 self.reads.lock().unwrap().clone()
             }
+
+            /// Make `skills/get` answer for this uri.
+            fn with_entry(&self, uri: &str, entry: RemoteEntry) {
+                self.entries.lock().unwrap().insert(uri.to_string(), entry);
+            }
         }
 
         #[async_trait]
@@ -1755,6 +1938,15 @@ Skills never change approval rules.
                     .get(uri)
                     .cloned()
                     .ok_or_else(|| format!("no such resource {uri}"))
+            }
+
+            async fn get_skill(&self, _server: &str, uri: &str) -> Result<RemoteEntry, String> {
+                self.entries
+                    .lock()
+                    .unwrap()
+                    .get(uri)
+                    .cloned()
+                    .ok_or_else(|| format!("no such skill {uri}"))
             }
         }
 
@@ -2084,13 +2276,74 @@ Skills never change approval rules.
             assert!(reader.reads().is_empty());
         }
 
+        /// SEP-2640 allows a partial listing: a skill can be served without ever
+        /// being listed, and a server's instructions may name its URI directly.
+        #[tokio::test]
+        async fn a_skill_can_be_loaded_by_uri_without_being_listed() {
+            let body = skill_md("pdf", "Extract PDF text.");
+            let manifest = entry(
+                vec![(SKILL_URI, body.as_bytes())],
+                listed("pdf", "Extract PDF text."),
+            );
+            let remote = RemoteEntry {
+                uri: SKILL_URI.to_string(),
+                frontmatter: manifest.listed.clone(),
+                files: manifest.files.clone(),
+                dynamic: false,
+            };
+            let reader = FakeReader::with(SKILL_URI, body.as_bytes());
+            reader.with_entry(SKILL_URI, remote);
+
+            // The index is empty on purpose: this skill is not in any listing.
+            let tool = SkillTool::with_reader(
+                Arc::new(SkillIndex::new(SkillSet::default())),
+                reader.clone(),
+            );
+            let tmp = tempfile::tempdir().unwrap();
+            let context = ToolContext::for_test(tmp.path());
+
+            let output = tool
+                .execute(&context, json!({"uri": SKILL_URI, "source": "mcp:github"}))
+                .await
+                .expect("the body should load by URI");
+            assert!(output.output.contains("Do the thing."), "{}", output.output);
+            assert_eq!(output.metadata.source.as_deref(), Some("mcp:github"));
+            assert_eq!(
+                reader.reads(),
+                vec![SKILL_URI.to_string()],
+                "the body is read once, after the entry says what to expect"
+            );
+        }
+
+        /// A URI alone does not say which server serves it, and two servers can
+        /// serve the same URI, so the origin has to be named.
+        #[tokio::test]
+        async fn loading_by_uri_needs_the_source() {
+            let tool = SkillTool::with_reader(
+                Arc::new(SkillIndex::new(SkillSet::default())),
+                Arc::new(FakeReader::default()),
+            );
+            let tmp = tempfile::tempdir().unwrap();
+            let context = ToolContext::for_test(tmp.path());
+
+            let error = tool
+                .execute(&context, json!({"uri": SKILL_URI}))
+                .await
+                .unwrap_err();
+            assert!(error.to_string().contains("source"), "{error}");
+        }
+
         #[tokio::test]
         async fn a_dynamic_skill_cannot_be_loaded() {
             let mut manifest = entry(vec![], listed("pdf", "Extract PDF text."));
             manifest.dynamic = true;
             let skill = served_skill(manifest, "pdf");
             let reader = Arc::new(FakeReader::default());
-            let tool = SkillTool::with_reader(set_with(skill), reader.clone());
+            // Built directly rather than through `with_served`: the index now
+            // refuses dynamic skills, and this test keeps the read-time guard
+            // honest for a set that got one another way.
+            let set = Arc::new(SkillIndex::new(SkillSet::sorted(vec![skill])));
+            let tool = SkillTool::with_reader(set, reader.clone());
             let tmp = tempfile::tempdir().unwrap();
             let context = ToolContext::for_test(tmp.path());
 

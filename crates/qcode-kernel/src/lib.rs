@@ -648,6 +648,30 @@ impl qcode_tools::skills::RemoteSkillReader for McpSkillReader {
     async fn read_uri(&self, server: &str, uri: &str) -> Result<Vec<u8>, String> {
         self.source.read_resource(server, uri).await
     }
+
+    /// `skills/get` (ADR-0108 §4): the entry for a skill the listing may not
+    /// contain. Its digests are what makes the body verifiable.
+    async fn get_skill(
+        &self,
+        server: &str,
+        uri: &str,
+    ) -> Result<qcode_tools::skills::RemoteEntry, String> {
+        let served = self.source.get_skill(server, uri).await?;
+        Ok(qcode_tools::skills::RemoteEntry {
+            uri: served.uri,
+            frontmatter: served.frontmatter,
+            files: served
+                .files
+                .into_iter()
+                .map(|file| qcode_tools::skills::ServedFile {
+                    uri: file.uri,
+                    digest: file.digest,
+                    size: file.size,
+                })
+                .collect(),
+            dynamic: served.dynamic,
+        })
+    }
 }
 
 /// All discovery roots in increasing precedence: global, user, configured,

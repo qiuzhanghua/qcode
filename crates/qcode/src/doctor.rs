@@ -863,7 +863,16 @@ impl Doctor {
                         .find(|server| server.name == report.server)
                         .is_some_and(|server| server.skills_allowed(config.skills.mcp));
                 if indexed {
-                    declared
+                    match report.skill_count {
+                        Some(count) => format!(
+                            "{declared}{}",
+                            qcode_i18n::trp(
+                                "cli.doctor.detail.mcp_probe_skills_count",
+                                &[count.to_string().as_str()],
+                            )
+                        ),
+                        None => declared,
+                    }
                 } else {
                     format!(
                         "{declared}{}",

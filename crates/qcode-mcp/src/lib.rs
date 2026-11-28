@@ -845,6 +845,27 @@ impl McpToolSource {
         (listings, errors)
     }
 
+    /// One skill by URI, from the server the caller names (ADR-0108 §4).
+    ///
+    /// The skill does not have to appear in that server's listing: a partial
+    /// listing is legal, and this is how a URI named in the server's
+    /// `instructions` becomes loadable.
+    pub async fn get_skill(&self, server: &str, uri: &str) -> Result<ServedSkill, String> {
+        let handle = self
+            .servers
+            .iter()
+            .find(|handle| handle.label() == server)
+            // i18n:keep 内部调用诊断（服务器标签由本进程分配），受众是日志
+            .ok_or_else(|| format!("no server labelled '{server}'"))?;
+        if !handle.supports_skills() {
+            // i18n:keep 协议层诊断，受众是日志
+            return Err(format!(
+                "server '{server}' does not declare the skills extension"
+            ));
+        }
+        handle.get_skill(uri).await
+    }
+
     /// The bytes of one resource, from the server the skill came from.
     ///
     /// Bound to the labelled server: a skill served by A must never be able to
@@ -972,6 +993,22 @@ impl ServerHandle {
     }
 
     /// One `resources/read`, as bytes.
+    /// SEP-2640 `skills/get`: the entry for one skill, by the URI of its
+    /// `SKILL.md`.
+    ///
+    /// A listing is authoritative for the skills it contains, but it may be
+    /// partial (the spec allows it) and a server's `instructions` may name a
+    /// URI directly. This is the only way to learn that skill's digests before
+    /// reading its body.
+    async fn get_skill(&self, uri: &str) -> Result<ServedSkill, String> {
+        let result = self
+            .service
+            .get_skill(rmcp::model::GetSkillRequestParams::new(uri))
+            .await
+            .map_err(|error| error.to_string())?;
+        self.served_skill(result.skill)
+    }
+
     async fn read_resource_bytes(&self, uri: &str) -> Result<Vec<u8>, String> {
         let params: rmcp::model::ReadResourceRequestParams =
             serde_json::from_value(serde_json::json!({ "uri": uri }))
@@ -1314,6 +1351,10 @@ pub struct CapabilityProbe {
     pub registered: Vec<Extra>,
     pub resources: ProbeAnswer,
     pub prompts: ProbeAnswer,
+    /// Whether `skills/list` answered, and how many skills the first page had.
+    /// The count is `None` when the call failed or the server declared nothing.
+    pub skills: ProbeAnswer,
+    pub skill_count: Option<usize>,
     pub instructions_bytes: Option<usize>,
     /// Why the server could not be reached at all. When set, every field above
     /// but `server`/`transport` is meaningless.
@@ -1330,6 +1371,8 @@ impl CapabilityProbe {
             registered: Vec::new(),
             resources: ProbeAnswer::TimedOut,
             prompts: ProbeAnswer::TimedOut,
+            skills: ProbeAnswer::TimedOut,
+            skill_count: None,
             instructions_bytes: None,
             error: Some(error),
         }
@@ -1373,6 +1416,7 @@ pub async fn probe_capabilities(
                 let declared = DeclaredCapabilities::from_wire(&found.capabilities);
                 let resources = probe_resources(&found.service, timeout).await;
                 let prompts = probe_prompts(&found.service, timeout).await;
+                let (skills, skill_count) = probe_skills(&found.service, timeout).await;
                 reports.push(CapabilityProbe {
                     server: server.name.clone(),
                     transport: server.transport(),
@@ -1381,6 +1425,8 @@ pub async fn probe_capabilities(
                     declared,
                     resources,
                     prompts,
+                    skills,
+                    skill_count,
                     instructions_bytes: found
                         .instructions
                         .as_deref()
@@ -1402,6 +1448,22 @@ pub async fn probe_capabilities(
 ///
 /// `false`-shaped answers are not errors here: "this server has no resources" is
 /// an ordinary state that the caller reports, not a problem to log at `warn`.
+/// `skills/list`, with how many skills the first page carried.
+///
+/// One page is enough for doctor: the question is "does this server serve
+/// skills at all", not "what is its whole catalogue" (that is the session's
+/// job, and it pages to the end there).
+async fn probe_skills(
+    service: &Service,
+    timeout: std::time::Duration,
+) -> (ProbeAnswer, Option<usize>) {
+    match tokio::time::timeout(timeout, service.list_skills(None)).await {
+        Ok(Ok(result)) => (ProbeAnswer::Supported, Some(result.skills.len())),
+        Ok(Err(error)) => (ProbeAnswer::Refused(error.to_string()), None),
+        Err(_) => (ProbeAnswer::TimedOut, None),
+    }
+}
+
 async fn probe_resources(service: &Service, timeout: std::time::Duration) -> ProbeAnswer {
     match tokio::time::timeout(timeout, service.list_resources(None)).await {
         Ok(Ok(_)) => ProbeAnswer::Supported,

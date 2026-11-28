@@ -13982,10 +13982,19 @@ P0 按修订后的范围落地：`crates/qcode-tools/src/skills.rs`（身份、�
   未列在清单里的文件**不发请求**。
 - 限制：512 个 resource / 16 MiB，**索引时就拒**（`SkillSet::with_served`）。超限的技能
   不进 prompt，也就不会变成一次注定失败的调用。
-- `dynamic`：索引保留、载入时拒（`read_served` 报错）。保留是有意的——「这个 skill 无法
-  内容绑定」本身是该让模型看见的信息。
+- `dynamic`：**不索引**（2026-11-28 修订）。原来选择「索引保留、载入时拒」，代价是模型
+  看见一个注定报错的条目；现在在 `SkillSet::with_served` 就跳过并 WARN，载入时的拒载
+  保留为第二条路径的兜底。
 - 内容绑定：**没有授权缓存**，冻结在「清单即绑定」这一层（见上面表格）。不新增任何授权
   点，`policy.rs` 一行未改。
+- **按 URI 加载（2026-11-28 补做，§4 的缺口）**：规格允许部分清单，且服务器可以在
+  `instructions` 里直接点名 `SKILL.md` 的 URI，因此 `skill` 工具加了 `uri` 参数（与
+  `name` 二选一，需 `source` 指定来源）→ `skills/get` 取条目 → size/digest/frontmatter
+  校验 → `resources/read` 取正文。`skills/get` 在此之前是死代码。
+- **`/skills` 视图的来源**改成 `origin_label()`：服务器叫 `user` 时不再与本地 user 根
+  显示成一样。
+- **`qc doctor --probe`** 现在会真的调一次 `skills/list` 并报告「列了 N 个 skill」，
+  不再只说「声明了 / 没索引」。
 - **界面来源徽章（P1，2026-11-28 补做）**：schema v13 给 `ToolMetadata` 加加性的
   `source`，`skill` 的正文与附件写入 `mcp:<server>` / 本地来源；`ToolEntry` 跟着带，
   TUI 与 GUI 的工具行显示徽章。旧日志读成 `None`，行为不变。

@@ -2117,6 +2117,18 @@ tool:
       remote_read_failed:
         en: "reading %{0} from %{1} failed: %{2}"
         zh-CN: "从 %{1} 读 %{0} 失败：%{2}"
+      one_of:
+        en: "give either `name` (from the index) or `uri`, not both and not neither"
+        zh-CN: "`name`（索引里的名字）与 `uri` 二选一：两个都给、或者都不给都不行"
+      uri_needs_source:
+        en: "loading by `uri` also needs `source` — the origin the index shows, for example `mcp:github`"
+        zh-CN: "按 `uri` 加载还要给 `source`：索引里显示的那个来源，例如 `mcp:github`"
+      no_reader_uri:
+        en: "this session cannot fetch served skills, so `%{0}` cannot be loaded"
+        zh-CN: "本次会话取不到服务端 skill，`%{0}` 加载不了"
+      get_failed:
+        en: "skills/get failed: %{0}"
+        zh-CN: "skills/get 失败：%{0}"
       symlink:
         en: "%{0}: a skill directory must not be a symlink"
         zh-CN: "%{0}：技能目录不能是符号链接"
@@ -3567,6 +3579,9 @@ cli:
       mcp_probe_skills:
         en: " · declares skills (directory read: %{0})"
         zh-CN: " · 声明 skills（目录读取：%{0}）"
+      mcp_probe_skills_count:
+        en: " · %{0} skill(s) listed"
+        zh-CN: " · 列了 %{0} 个 skill"
       mcp_probe_skills_not_indexed:
         en: " · skills are not indexed; set skills = true for this server (ADR-0108)"
         zh-CN: " · skills 未进索引；需要为这个服务器设 skills = true（ADR-0108）"
