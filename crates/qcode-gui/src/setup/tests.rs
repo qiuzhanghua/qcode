@@ -1066,6 +1066,58 @@ fn unknown_grant_text_is_not_written_verbatim() {
     assert_eq!(parse_sandbox_mode(Some("yolo")), None);
 }
 
+/// `skills` is `Option<bool>`: the picker's third state (`inherit`) has to be
+/// distinguishable from `false`, or turning inheritance back on would be
+/// impossible from the settings screen.
+#[test]
+fn the_skills_picker_keeps_inherit_and_off_apart() {
+    let mapping = |cell: Option<&str>, previous: Option<&qcode_mcp::McpServerConfig>| {
+        super::save::mcp_server_from_cells(
+            McpRowCells {
+                name: "probe".to_string(),
+                transport: "/bin/true".to_string(),
+                args: Vec::new(),
+                env: Vec::new(),
+                enabled: true,
+                timeout_secs: 60,
+                grant: GrantCells {
+                    read_paths: Vec::new(),
+                    writable_paths: Vec::new(),
+                    credentials: Vec::new(),
+                    sandbox: None,
+                },
+                skills: cell.map(str::to_string),
+            },
+            previous,
+        )
+        .expect("server")
+        .skills
+    };
+
+    let old = qcode_mcp::McpServerConfig {
+        name: "probe".to_string(),
+        skills: Some(false),
+        ..Default::default()
+    };
+    assert_eq!(mapping(Some("on"), Some(&old)), Some(true));
+    assert_eq!(mapping(Some("off"), Some(&old)), Some(false));
+    assert_eq!(
+        mapping(Some("inherit"), Some(&old)),
+        None,
+        "inherit clears the override even when the file had one"
+    );
+    assert_eq!(
+        mapping(None, Some(&old)),
+        Some(false),
+        "a row with no cell predates the column and must not clear it"
+    );
+    assert_eq!(
+        mapping(Some("yolo"), Some(&old)),
+        Some(false),
+        "an unknown label keeps what the file had"
+    );
+}
+
 /// The grid is the only place the grant set is edited, so this mapping is the
 /// whole feature: everything the user typed must land in the config entry, and
 /// nothing the loader would reject may be written.
@@ -1089,6 +1141,7 @@ fn an_mcp_row_becomes_the_config_entry() {
                 credentials: vec!["github".to_string(), "ssh".to_string()],
                 sandbox: Some("off".to_string()),
             },
+            skills: Some("on".to_string()),
         },
         None,
     )
@@ -1120,6 +1173,11 @@ fn an_mcp_row_becomes_the_config_entry() {
         ]
     );
     assert_eq!(server.sandbox, Some(qcode_mcp::McpSandboxMode::Off));
+    assert_eq!(
+        server.skills,
+        Some(true),
+        "the skills picker is the only source for the per-server switch"
+    );
 
     // An unnamed row is not a server: it would be an entry with an empty name,
     // which `validate()` rejects and which nothing could ever address.
@@ -1138,6 +1196,7 @@ fn an_mcp_row_becomes_the_config_entry() {
                     credentials: Vec::new(),
                     sandbox: None,
                 },
+                skills: None,
             },
             None,
         )
@@ -1175,6 +1234,8 @@ fn fields_without_columns_are_carried_over_from_the_previous_entry() {
                 credentials: Vec::new(),
                 sandbox: Some("inherit".to_string()),
             },
+            // The hand-written switch the grid used to preserve blindly.
+            skills: None,
         },
         Some(&previous),
     )

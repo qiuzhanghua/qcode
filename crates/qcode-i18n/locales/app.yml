@@ -1659,6 +1659,9 @@ gui:
           sandbox:
             en: "Sandbox"
             zh-CN: "沙箱"
+          skills:
+            en: "Skills"
+            zh-CN: "技能"
     # 搜索页的「已启用但缺必填项」提示（设置页警示 / 向导拦截）。与内核注册
     # web_search 时的判定一致，文案点名还差哪个必填项。
     search:
@@ -3240,6 +3243,9 @@ cli:
     disabled:
       en: "skills are disabled ([skills] enabled = false)"
       zh-CN: "技能已关闭（`[skills] enabled = false`）"
+    mcp_hint:
+      en: "%{0} MCP server(s) are configured to provide skills; they are not listed here (this command does not connect). See `qc doctor`."
+      zh-CN: "另有 %{0} 个 MCP 服务器配置为提供 skills；这条命令不联网，所以不列——用 `qc doctor` 查看。"
     none_found:
       en: "no skills discovered; checked:"
       zh-CN: "没有发现技能；检查过这些位置："

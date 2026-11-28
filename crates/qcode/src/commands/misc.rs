@@ -136,6 +136,28 @@ pub(crate) fn cmd_skills(
         return Ok(ExitCode::SUCCESS);
     }
 
+    // ADR-0108 §7: skills served over MCP cannot be listed here without
+    // connecting, and this command must stay offline. Say how many servers
+    // would contribute, and point at the command that does connect — otherwise
+    // "I turned it on and the list is empty" has no explanation.
+    let mcp_configured = loaded
+        .mcp
+        .servers
+        .iter()
+        .filter(|server| server.skills_allowed(loaded.skills.mcp))
+        .count();
+    let print_mcp_hint = || {
+        if mcp_configured > 0 {
+            println!(
+                "\n{}",
+                qcode_i18n::trp(
+                    "cli.skills.mcp_hint",
+                    &[mcp_configured.to_string().as_str()]
+                )
+            );
+        }
+    };
+
     let roots = qcode_kernel::skill_roots(&loaded.skills, &workspace);
     let skills = SkillSet::discover(&roots);
 
@@ -144,6 +166,7 @@ pub(crate) fn cmd_skills(
         for (source, path) in &roots {
             println!("  [{}] {}", source.label(), path.display());
         }
+        print_mcp_hint();
         return Ok(ExitCode::SUCCESS);
     }
 
@@ -168,6 +191,7 @@ pub(crate) fn cmd_skills(
         "\n{}",
         qcode_i18n::trp("cli.skills.count", &[skills.len().to_string().as_str()])
     );
+    print_mcp_hint();
     Ok(ExitCode::SUCCESS)
 }
 

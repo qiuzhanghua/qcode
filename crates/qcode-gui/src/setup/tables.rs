@@ -262,14 +262,24 @@ impl SetupView {
                 ),
             ],
             [("enabled", server.enabled)],
-            [(
-                "sandbox",
-                // `inherit` is the absence of an override, not a third mode.
-                server
-                    .sandbox
-                    .map(|mode| mode.label().to_string())
-                    .unwrap_or_else(|| "inherit".to_string()),
-            )],
+            [
+                (
+                    "sandbox",
+                    // `inherit` is the absence of an override, not a third mode.
+                    server
+                        .sandbox
+                        .map(|mode| mode.label().to_string())
+                        .unwrap_or_else(|| "inherit".to_string()),
+                ),
+                (
+                    "skills",
+                    match server.skills {
+                        None => "inherit".to_string(),
+                        Some(true) => "on".to_string(),
+                        Some(false) => "off".to_string(),
+                    },
+                ),
+            ],
             window,
             cx,
         )

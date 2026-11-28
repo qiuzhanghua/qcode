@@ -139,6 +139,10 @@ const MCP_SANDBOX_MODES: &[&str] = &["confine", "off"];
 /// rather than a sentinel value, so the picker cannot produce a name the loader
 /// rejects.
 const MCP_SERVER_SANDBOX_MODES: &[&str] = &["inherit", "confine", "off"];
+/// `Option<bool>` needs three states, so this is a picker rather than a Bool
+/// column: `inherit` means "whatever `[skills] mcp` says", and a checkbox has
+/// no way to express it (ADR-0108 §1, §6).
+const MCP_SERVER_SKILLS_MODES: &[&str] = &["inherit", "on", "off"];
 
 pub const FIELDS: &[FieldSpec] = &[
     FieldSpec {
@@ -729,6 +733,11 @@ pub const TABLES: &[TableSpec] = &[
                 key: "sandbox",
                 label: "gui.setup.spec.mcp.servers.col.sandbox",
                 kind: FieldKind::Select(MCP_SERVER_SANDBOX_MODES),
+            },
+            ColumnSpec {
+                key: "skills",
+                label: "gui.setup.spec.mcp.servers.col.skills",
+                kind: FieldKind::Select(MCP_SERVER_SKILLS_MODES),
             },
         ],
     },

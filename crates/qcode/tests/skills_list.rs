@@ -90,6 +90,35 @@ fn lists_global_configured_and_project_roots() {
     assert!(stdout.contains("6 个技能"), "{stdout}");
 }
 
+/// ADR-0108 §7: this command must not connect to MCP servers, so it cannot
+/// list what they serve — but it can say how many would contribute. Without
+/// that line, turning `[skills] mcp = true` on and seeing nothing looks broken.
+#[test]
+fn points_at_servers_that_would_contribute_skills() {
+    let home = TempDir::new().unwrap();
+    let workspace = TempDir::new().unwrap();
+    let config = workspace.path().join("config.toml");
+
+    std::fs::write(
+        &config,
+        "[[mcp.servers]]\nname = \"github\"\ncommand = \"/bin/true\"\nskills = true\n",
+    )
+    .unwrap();
+    let stdout = list(&config, workspace.path(), home.path());
+    assert!(stdout.contains("另有 1 个 MCP 服务器"), "{stdout}");
+    assert!(stdout.contains("qc doctor"), "{stdout}");
+
+    // The default: a configured server without the per-server switch inherits
+    // `[skills] mcp = false`, so there is nothing to explain.
+    std::fs::write(
+        &config,
+        "[[mcp.servers]]\nname = \"github\"\ncommand = \"/bin/true\"\n",
+    )
+    .unwrap();
+    let stdout = list(&config, workspace.path(), home.path());
+    assert!(!stdout.contains("另有"), "{stdout}");
+}
+
 #[test]
 fn reports_disabled_and_empty_discovery() {
     let home = TempDir::new().unwrap();

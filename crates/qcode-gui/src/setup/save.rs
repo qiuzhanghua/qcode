@@ -449,6 +449,7 @@ impl SetupView {
                                     credentials: lines(row, "credentials", cx),
                                     sandbox: row.selects.get("sandbox").cloned(),
                                 },
+                                skills: row.selects.get("skills").cloned(),
                             },
                             previous,
                         );
@@ -964,6 +965,9 @@ pub(crate) struct McpRowCells {
     pub enabled: bool,
     pub timeout_secs: u64,
     pub grant: GrantCells,
+    /// `inherit` / `on` / `off` for the per-server `skills` switch
+    /// (ADR-0108 §1). Absent means the row predates the column.
+    pub skills: Option<String>,
 }
 
 /// Turn one `[mcp.servers]` row into a config entry.
@@ -990,6 +994,7 @@ pub(crate) fn mcp_server_from_cells(
         enabled,
         timeout_secs,
         grant,
+        skills,
     } = cells;
     if name.trim().is_empty() {
         return None;
@@ -1023,11 +1028,20 @@ pub(crate) fn mcp_server_from_cells(
             .collect(),
         credentials: credential_presets(&grant.credentials).0,
         sandbox: parse_sandbox_mode(grant.sandbox.as_deref()),
-        // No column yet (ADR-0108 §6 adds one in M8). Until then the grid must
-        // not be a lossy round trip: saving any other cell would otherwise
-        // reset a hand-written `skills = true` back to `None` and silently
-        // switch the server's skills off.
-        skills: previous.and_then(|old| old.skills),
+        // The column is the only source now: `inherit` clears the override
+        // instead of resurrecting the old value (ADR-0108 §1). A picker value
+        // the loader has never heard of keeps whatever the file had, so a
+        // hand-edited `skills = true` survives a visit to the settings screen.
+        skills: match skills.as_deref() {
+            Some("on") | Some("true") => Some(true),
+            Some("off") | Some("false") => Some(false),
+            // `inherit` clears the override; it must not resurrect the old
+            // value, or the picker's first option would be a no-op.
+            Some("inherit") | Some("") => None,
+            // No cell at all means a row that predates the column: keep what
+            // the file had. An unknown label is the same case.
+            None | Some(_) => previous.and_then(|old| old.skills),
+        },
     })
 }
 

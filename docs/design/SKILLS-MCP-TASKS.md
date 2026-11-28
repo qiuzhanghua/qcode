@@ -20,7 +20,7 @@ P0 已落地（提交 `7590f6c feat(skills): MCP 服务器贡献 skill 索引（
 | `qc doctor --probe` 报「声明了但没索引」 | `qcode/src/doctor.rs` |
 | 测试 | `qcode-kernel/tests/mcp_skills.rs`(5)、`mcp_connect_once.rs`(2)、skills 单测 40 条 |
 
-### P0 还差两个口子（ADR §6 第 1、3 项）
+### P0 还差两个口子（ADR §6 第 1、3 项）——**已补，2026-11-28**
 
 - **MCP 服务器表格没有 `skills` 列**。`setup/save.rs:1026` 目前靠「保存时沿用旧值」避免
   丢配置，注释里也写着「ADR-0108 §6 adds one in M8」——用户在界面上**改不了**。
@@ -33,8 +33,8 @@ P0 已落地（提交 `7590f6c feat(skills): MCP 服务器贡献 skill 索引（
 
 | 编号 | 任务 | 改动点 | 验收 | 规模 |
 |---|---|---|---|---|
-| **A1** | MCP 服务器表格加 `skills` 列（`FieldKind::Bool`） | `qcode-gui/src/forms.rs:673` 的 `TableSpec` 追加一列、`setup/fields.rs` 的读写两处、i18n `gui.setup.spec.mcp.servers.col.skills`（双语）；`save.rs` 的「沿用旧值」注释删掉 | `cargo test -p qcode-gui`（`tests/spec_i18n.rs` 会盯双语与 key 唯一）、`scripts/check-i18n-golden.sh --record` 后 88 项重录 | S（~40 行 + 2 键） |
-| **A2** | `qc skills list` 末尾提示 | `qcode/src/commands/misc.rs` `cmd_skills`：统计「配置为提供 skills 的服务器数」，非零时打一行；i18n `cli.skills.mcp_hint`（双语） | `crates/qcode/tests/skills_list.rs` 新增断言：开关打开时出现、关闭时不出现 | S（~15 行 + 1 键） |
+| **A1** ✅ | MCP 服务器表格加 `skills` 列 | `gui/src/forms.rs` 追加列与选项表、`setup/tables.rs` 播种、`setup/save.rs` 三态映射、i18n `gui.setup.spec.mcp.servers.col.skills`（双语）。**没有用 `FieldKind::Bool`**：`Option<bool>` 需要「inherit/on/off」三态，跟 `sandbox` 列同一个形状 | `cargo test -p qcode-gui --test spec_i18n`（4 条）+ `setup::tests`（新增三态映射测试）；golden 不受影响——它只覆盖 CLI `--help` | S（~50 行 + 1 键） |
+| **A2** ✅ | `qc skills list` 末尾提示 | `qcode/src/commands/misc.rs` `cmd_skills`：统计「配置为提供 skills 的服务器数」，非零时打一行；i18n `cli.skills.mcp_hint`（双语） | `crates/qcode/tests/skills_list.rs::points_at_servers_that_would_contribute_skills` | S（~20 行 + 1 键） |
 
 ### B. 独立决策：统一执行闸门（阻断 SEP-2640 合规声明）
 
@@ -101,7 +101,8 @@ A1, A2 ──► B1（决策）──► B2（仅当 B1 选 b/c）
               └──► D1 ──► D2 ──► D3
 ```
 
-- **A 先做**：两个小口子把 P0 真正闭合，且 A1 的 golden 重录不能被后面的大改干扰。
+- **A 先做**：两个小口子把 P0 真正闭合；A1 的 GUI spec 变更最好赶在 C/D 之前，
+  免得与后面动 schema 的提交混在一起。
 - **C 与 D 互不依赖**，可以并行；但 D 动 schema，建议放在 C 之后，避免 schema 与索引
   语义在同一轮里一起变。
 - **B 只挡「合规声明」**，不挡功能。若近期不打算对外宣称 SEP-2640，B1 可以只写 ADR、
@@ -118,4 +119,4 @@ A1, A2 ──► B1（决策）──► B2（仅当 B1 选 b/c）
   （本机跳过的 4 条理由见 `docs/DEVELOPMENT.md`）。
 - i18n：`cargo test -p qcode-i18n --test gates`（12 条）+ 双语 golden 88 项。
 - 新增用户可见文案一律双语，工具名/参数名/`mcp:<server>` 不翻。
-- A1 与 D2 会改 golden：同一次提交里重录，不跨提交。
+- A1 会改 GUI spec（由 `crates/qcode-gui/tests/spec_i18n.rs` 盯）；D2 才需要重录 golden。
