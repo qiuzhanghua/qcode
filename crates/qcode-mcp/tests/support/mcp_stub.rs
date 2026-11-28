@@ -66,6 +66,16 @@ fn main() {
                 if has("prompts") {
                     capabilities["prompts"] = json!({});
                 }
+                // SEP-2640 (ADR-0108). `directory-read` implies `skills`,
+                // because a server may not serve directory reads without
+                // declaring the extension that defines them.
+                if has("skills") || has("directory-read") {
+                    let mut skills = json!({});
+                    if has("directory-read") {
+                        skills["directoryRead"] = json!(true);
+                    }
+                    capabilities["extensions"] = json!({"io.modelcontextprotocol/skills": skills});
+                }
                 let mut result = json!({
                     "protocolVersion": "2025-06-18",
                     "capabilities": capabilities,

@@ -75,6 +75,31 @@ fn classify(result: &std::io::Result<()>) -> &'static str {
 fn serve() {
     let stdin = io::stdin();
     let mut stdout = io::stdout().lock();
+    // ADR-0108 §2: one line per process start, so a test can count launches.
+    // Connecting twice is invisible from the outside — the session still works,
+    // the servers just run twice — so the launch itself has to be recorded.
+    if let Ok(log) = std::env::var("MCP_START_LOG") {
+        use std::io::Write as _;
+        if let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(log)
+        {
+            let _ = writeln!(file, "start");
+        }
+    }
+    // Optional capabilities come from the environment, like `mcp-stub` in
+    // `qcode-mcp`, so a test can make this server declare the skills extension.
+    let caps = std::env::var("MCP_STUB_CAPS").unwrap_or_else(|_| "tools".to_string());
+    let has = |capability: &str| caps.split(',').any(|name| name.trim() == capability);
+    let mut capabilities = json!({"tools": {}});
+    if has("skills") || has("directory-read") {
+        let mut skills = json!({});
+        if has("directory-read") {
+            skills["directoryRead"] = json!(true);
+        }
+        capabilities["extensions"] = json!({"io.modelcontextprotocol/skills": skills});
+    }
     for line in stdin.lock().lines() {
         let Ok(line) = line else { break };
         if line.trim().is_empty() {
@@ -91,11 +116,56 @@ fn serve() {
                 id,
                 json!({
                     "protocolVersion": "2025-06-18",
-                    "capabilities": {"tools": {}},
+                    "capabilities": capabilities,
                     "serverInfo": {"name": "mcp-probe-stub", "version": "0.0.1"}
                 }),
             ),
             "notifications/initialized" => {}
+            // ADR-0108: one skill, served with real digests so a test can drive
+            // the whole path — list, index, fetch, verify.
+            "skills/list" => respond(
+                &mut stdout,
+                id,
+                json!({
+                    "skills": [{
+                        "uri": SKILL_URI,
+                        "frontmatter": {
+                            "name": "probe-skill",
+                            "description": "A skill the probe stub serves.",
+                            "license": "MIT"
+                        },
+                        "resources": [
+                            {"uri": SKILL_URI, "digest": SKILL_DIGEST, "size": SKILL_MD.len()},
+                            {"uri": GUIDE_URI, "digest": GUIDE_DIGEST, "size": GUIDE.len()}
+                        ]
+                    }]
+                }),
+            ),
+            "resources/read" => {
+                let uri = message
+                    .get("params")
+                    .and_then(|params| params.get("uri"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                match uri {
+                    SKILL_URI => respond(
+                        &mut stdout,
+                        id,
+                        json!({"contents": [{"uri": SKILL_URI, "text": SKILL_MD}]}),
+                    ),
+                    GUIDE_URI => respond(
+                        &mut stdout,
+                        id,
+                        json!({"contents": [{"uri": GUIDE_URI, "text": GUIDE}]}),
+                    ),
+                    other => respond_error(
+                        &mut stdout,
+                        id,
+                        -32602,
+                        format!("no such resource: {other}"),
+                    ),
+                }
+            }
             "tools/list" => respond(
                 &mut stdout,
                 id,
@@ -193,3 +263,28 @@ fn respond(stdout: &mut impl Write, id: Option<Value>, result: Value) {
     );
     let _ = stdout.flush();
 }
+
+fn respond_error(stdout: &mut impl Write, id: Option<Value>, code: i64, message: String) {
+    let Some(id) = id else { return };
+    let _ = writeln!(
+        stdout,
+        "{}",
+        json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message}})
+    );
+    let _ = stdout.flush();
+}
+
+const SKILL_URI: &str = "skill://probe-skill/SKILL.md";
+const GUIDE_URI: &str = "skill://probe-skill/references/GUIDE.md";
+// `license` is here so a test can see that a frontmatter field other than
+// `name`/`description` survives both the wire and the full-field comparison.
+const SKILL_MD: &str = "---\nname: probe-skill\ndescription: A skill the probe stub serves.\nlicense: MIT\n---\n\nProbe body.\n";
+const GUIDE: &str = "guide body\n";
+
+// The digests of the two constants above, computed once so this test binary
+// needs no hashing dependency: if either string changes, these must be updated
+// and the test will say so (the digest check in `qcode-tools` refuses the body).
+const SKILL_DIGEST: &str =
+    "sha256:d716973bf301ef0dda297ff7dbd2d1586fba16e9220789a0aa78a433fc5f5cfd";
+const GUIDE_DIGEST: &str =
+    "sha256:0d1e5a71e81ff1119e35713c5294c37a63090c03b6e42ecb8a491558e9b23a6a";

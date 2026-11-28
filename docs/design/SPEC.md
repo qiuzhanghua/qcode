@@ -135,7 +135,7 @@
 | `job_list` | — | 无 | allow | 存活 + 最近 8 个已结束的后台任务 |
 | `job_read` | `job, wait_secs?` | 无 | allow | 读「上次之后」的输出，每流 32KB；`wait_secs` 可长轮询 |
 | `job_kill` | `job` | 停进程 | ask | 与前台取消同一套 SIGTERM→SIGKILL |
-| `skill` | `name, file?` | 读本地 skill | allow | 加载 SKILL.md 正文或附件；路径限制在 skill 目录 |
+| `skill` | `name, file?` | 读 skill | allow | 加载 SKILL.md 正文或附件；路径限制在 skill 目录；MCP 来源按清单校验 size/digest/frontmatter（ADR-0108） |
 | `todo_write` | `items[]` | session 状态 | allow | 渲染在 TUI，不进文件系统 |
 | `web_fetch` | `url` | 网络 | ask | 仅 http/https；上限 100KB；域名策略 |
 

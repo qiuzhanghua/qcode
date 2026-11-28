@@ -697,6 +697,9 @@ cargo build -p qcode-eval
   只放 `name` / `description`；模型调用 `skill` 工具按需加载正文，或用 `file` 参数读
   `references/` 等附件。非法/超限/symlink 的 skill 跳过并告警，
   global < user < config < project(.agents) < project(.qcode)。`qc skills list` 可查看全部发现结果。
+  开启 `[skills] mcp = true`（或按服务器 `skills = true`）后，声明了 Skills 扩展的 MCP
+  server 也会贡献索引条目：来源标成 `mcp:<server>`，正文按清单的 size + SHA-256 与
+  frontmatter 校验通过才载入，超限（512 个 resource / 16 MiB）不索引（ADR-0108）。
 - **MCP（tools + resources + prompts，stdio 与 Streamable HTTP）**：启动时连接启用的
   server，`tools/list` 后以
   `mcp__<server>__<tool>` 注册，默认 ask（规则可按名称放行 / 拒绝）。`tools/call`
@@ -937,6 +940,7 @@ sandbox = "confine"               # 可选，覆盖 [mcp] sandbox
 # roots 是额外目录（可选），按顺序覆盖 global/user；project 仍最高优先级。
 [skills]
 enabled = true
+mcp = false             # 允许 MCP server 贡献 skill 索引（默认关，ADR-0108）
 # roots = ["~/space/skills/skills"]
 
 # 应用级出口策略（v2）。provider 的 host 会自动加入 allowlist。

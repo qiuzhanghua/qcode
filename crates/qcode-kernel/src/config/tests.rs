@@ -662,6 +662,64 @@ fn skills_are_enabled_by_default_and_can_be_disabled() {
     assert_eq!(config.skills.roots.len(), 2);
 }
 
+/// ADR-0108 §1: skills over MCP is off unless two separate decisions are made.
+///
+/// The crate-wide `[skills] mcp` is the hard default; a server opts in with its
+/// own `skills = true`, and that override is per server — turning one server's
+/// skills on must never turn another's on.
+#[test]
+fn skills_over_mcp_is_off_until_a_server_opts_in() {
+    let config: Config = toml::from_str("").unwrap();
+    assert!(!config.skills.mcp, "[skills] mcp must default to false");
+
+    let config: Config = toml::from_str(
+        r#"
+            [skills]
+            mcp = true
+
+            [[mcp.servers]]
+            name = "github"
+            command = "gh-mcp"
+
+            [[mcp.servers]]
+            name = "local"
+            command = "local-mcp"
+            skills = false
+            "#,
+    )
+    .unwrap();
+    assert!(config.skills.mcp);
+    assert_eq!(
+        config.mcp.servers[0].skills, None,
+        "absent inherits the default"
+    );
+    assert!(config.mcp.servers[0].skills_allowed(config.skills.mcp));
+    assert_eq!(config.mcp.servers[1].skills, Some(false));
+    assert!(
+        !config.mcp.servers[1].skills_allowed(config.skills.mcp),
+        "a per-server false must beat the crate-wide true"
+    );
+}
+
+/// A per-server `skills = true` is enough on its own: the override exists so a
+/// user can trust one server without opening the door for every server they
+/// install later.
+#[test]
+fn a_single_server_can_opt_in_while_the_default_stays_off() {
+    let config: Config = toml::from_str(
+        r#"
+            [[mcp.servers]]
+            name = "github"
+            command = "gh-mcp"
+            skills = true
+            "#,
+    )
+    .unwrap();
+    assert!(!config.skills.mcp);
+    assert_eq!(config.mcp.servers[0].skills, Some(true));
+    assert!(config.mcp.servers[0].skills_allowed(config.skills.mcp));
+}
+
 #[test]
 fn mcp_servers_parse_with_defaults() {
     let config: Config = toml::from_str(
@@ -784,6 +842,63 @@ fn project_config_loads_from_the_workspace() {
     let config = load_project(dir.path()).expect("project config");
     assert_eq!(config.approval.rules.len(), 1);
     assert_eq!(config.approval.rules[0].scope, Some(Scope::Project));
+}
+
+/// ADR-0108 §1: a repository must not be able to hand itself a prompt channel.
+///
+/// `merge_project` appends the project's `[[mcp.servers]]` to the user's, so a
+/// repo that could also set `[skills] mcp = true` would be enabling skills for a
+/// server it supplied itself. Same rule as `[[approval.rules]]`: tighten only.
+#[test]
+fn a_project_config_cannot_enable_skills_over_mcp() {
+    let base_text = r#"
+        [[mcp.servers]]
+        name = "mine"
+        command = "my-mcp"
+        skills = true
+        "#;
+    let mut base: Config = toml::from_str(base_text).unwrap();
+    let project: Config = toml::from_str(
+        r#"
+            [skills]
+            mcp = true
+
+            [[mcp.servers]]
+            name = "theirs"
+            command = "their-mcp"
+            skills = true
+
+            [[mcp.servers]]
+            name = "theirs-quiet"
+            command = "their-mcp-2"
+            "#,
+    )
+    .unwrap();
+
+    merge_project(&mut base, project, ProjectSections::default());
+
+    assert!(!base.skills.mcp, "a project cannot turn this on");
+    // The user's own opt-in is untouched…
+    assert_eq!(base.mcp.servers[0].name, "mine");
+    assert_eq!(base.mcp.servers[0].skills, Some(true));
+    // …and the repo's own opt-in is dropped.
+    assert_eq!(base.mcp.servers[1].name, "theirs");
+    assert_eq!(base.mcp.servers[1].skills, None);
+    assert_eq!(base.mcp.servers[2].skills, None);
+}
+
+#[test]
+fn a_project_config_can_still_turn_skills_over_mcp_off() {
+    let mut base: Config = toml::from_str("").unwrap();
+    base.skills.mcp = true;
+    let project: Config = toml::from_str("[skills]\nenabled = false\n").unwrap();
+
+    merge_project(&mut base, project, ProjectSections::default());
+
+    assert!(
+        !base.skills.enabled,
+        "the project-level kill switch still wins"
+    );
 }
 
 #[test]

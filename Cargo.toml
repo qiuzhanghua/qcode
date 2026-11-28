@@ -63,6 +63,12 @@ rust-version = "1.100"
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# ADR-0108 §4: a served skill's frontmatter has to be read as YAML *and*
+# compared field-for-field with the listing, so it needs a real parser rather
+# than the shallow key/value scanner that reading `name`/`description` used to
+# allow. `serde-saphyr` is the maintained serde YAML front-end (`serde_yaml` is
+# deprecated), used only here.
+serde-saphyr = "1"
 toml = "1"
 thiserror = "2"
 # Config templates are embedded assets (ADR-0104 §3). Debug builds read from

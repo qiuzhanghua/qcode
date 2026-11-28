@@ -164,11 +164,39 @@ pub fn merge_project(base: &mut Config, project: Config, sections: ProjectSectio
     }
     base.providers.extend(project.providers);
     base.pricing.extend(project.pricing);
+    let project_server_count = project.mcp.servers.len();
     base.mcp.servers.extend(project.mcp.servers);
     if !project.skills.enabled {
         base.skills.enabled = false;
     }
     base.skills.roots.extend(project.skills.roots);
+    // ADR-0108 §1, and the same rule the approval block below enforces: a
+    // repository must not grant itself more than the user configured.
+    //
+    // `[skills] mcp` decides whether a server's text may reach the system
+    // prompt, and `merge_project` lets a project *add* `[[mcp.servers]]`. So a
+    // repo shipping `.qcode/config.toml` with `mcp = true` plus a server of its
+    // own would be handing itself a prompt-injection channel that the user
+    // never opened. It may only tighten: `false` wins, `true` is ignored.
+    if project.skills.mcp {
+        tracing::warn!(
+            "project config cannot enable skills over MCP; ignoring [skills] mcp = true"
+        );
+    }
+    // Per-server opt-ins from the project file lose the same way. Wrapping the
+    // extended range covers every server the project contributed without
+    // having to tell them apart: a server the user already configured keeps
+    // whatever its own file said, because `extend` appends rather than merges.
+    let user_servers = base.mcp.servers.len() - project_server_count;
+    for server in base.mcp.servers.iter_mut().skip(user_servers) {
+        if server.skills == Some(true) {
+            tracing::warn!(
+                server = %server.name,
+                "project config cannot enable a server's skills; ignoring skills = true"
+            );
+            server.skills = None;
+        }
+    }
     if sections.context {
         base.context = project.context;
     }
@@ -505,7 +533,7 @@ const KNOWN_KEYS: &[(&str, &[&str])] = &[
     ("agent", &["max_turns", "max_cost_usd", "snapshot_shell"]),
     // `sandbox` is the crate-wide default; each server may override it.
     ("mcp", &["servers", "sandbox"]),
-    ("skills", &["enabled", "roots"]),
+    ("skills", &["enabled", "roots", "mcp"]),
     (
         "sandbox",
         &[

@@ -286,3 +286,53 @@ async fn env_reaches_the_server_and_unlocks_resources_and_prompts() {
         output.output
     );
 }
+
+/// ADR-0108 §2: the skills declaration is read from the handshake, and only
+/// servers that made it show up.
+///
+/// The point of asserting on `skill_servers` rather than on the raw
+/// capabilities is that the caller needs the *name*, and the name must be the
+/// config's (`stub`), never the server's self-reported `serverInfo.name`
+/// (`mcp-stub`, which the stub sends deliberately differently).
+#[tokio::test]
+async fn a_server_that_declares_skills_is_named_by_its_config_label() {
+    let dir = tempfile::tempdir().unwrap();
+    let connection = qcode_mcp::connect_detailed(
+        &mcp(vec![
+            config_with_env("stub", &[("MCP_STUB_CAPS", "tools,skills")]),
+            config("plain"),
+        ]),
+        dir.path(),
+        dir.path(),
+        &[],
+        qcode_mcp::ConnectOptions::default(),
+    )
+    .await;
+
+    assert_eq!(
+        connection.skill_servers,
+        vec!["stub".to_string()],
+        "only the declaring server, labelled the way the config names it"
+    );
+    assert!(
+        !connection
+            .skill_servers
+            .iter()
+            .any(|name| name == "mcp-stub"),
+        "the server's own serverInfo.name must never become the label"
+    );
+}
+
+#[tokio::test]
+async fn no_declaration_means_no_skill_servers() {
+    let dir = tempfile::tempdir().unwrap();
+    let connection = qcode_mcp::connect_detailed(
+        &mcp(vec![config("plain")]),
+        dir.path(),
+        dir.path(),
+        &[],
+        qcode_mcp::ConnectOptions::default(),
+    )
+    .await;
+    assert!(connection.skill_servers.is_empty());
+}

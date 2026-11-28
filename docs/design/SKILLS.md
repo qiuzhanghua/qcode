@@ -65,11 +65,16 @@ qcode 只解释两个字段：
 
 ## 5. 工具契约
 
-`skill(name, file?)`，`ApprovalClass::Read`（只读本地文件，默认 allow）。
+`skill(name, file?)`，`ApprovalClass::Read`（只读；默认 allow）。**MCP 来源的 skill 也是
+`Read`**：审批类不随来源变化（ADR-0108 §5），防护放在注入侧与校验侧。
 
-- 未知 skill / 未知附件 → 工具错误，附可用名称。
-- `file` 必须是 skill 根下的相对路径；绝对路径、`..`、symlink 逃逸、二进制文件被拒绝。
-- 输出与内置工具一样做 32KiB 截断，并带 `[skill:<name>]` 来源标记。
+- 未知 skill / 未知附件 → 工具错误，附可用名称。同名多来源 → 报歧义并列出
+  `mcp:<server>` 或本地来源，绝不替模型挑一个。
+- 磁盘 skill 的 `file` 必须是 skill 根下的相对路径；绝对路径、`..`、symlink 逃逸、二进制
+  文件被拒绝。
+- 服务端 skill 的 `file` 必须在该 skill 的清单里；正文按清单的 size + SHA-256 校验，且
+  `SKILL.md` 的 frontmatter 必须与 `skills/list` 报告的一致，否则拒载。
+- 输出与内置工具一样做 32KiB 截断；MCP 来源的输出带 `Source: mcp:<server>`，本地带本地来源。
 
 ## 6. 限制
 
@@ -81,20 +86,34 @@ qcode 只解释两个字段：
 | 列出的附件数 | 200 |
 | 单个附件读取 | 256KiB（输出截断到 32KiB） |
 | 附件扫描深度 | 8 层 |
+| MCP skill 的 resource 数 | 512（SEP-2640；超限不索引，不入 prompt） |
+| MCP skill 的总字节 | 16 MiB（同上） |
 
 ## 7. 安全
 
 - skill 目录与 `SKILL.md` 都拒绝 symlink；附件读取先 canonicalize 再校验前缀。
 - skill 内容是**不可信指令**：不改变审批、不扩大 workspace、不引入 `allowed-tools`。
 - 用户级 skill 在 workspace 之外，只有 `skill` 工具能读；`read_file` 仍被限制在 workspace。
-- 不做 imports、远程下载、自动激活或 slash command；这些留给后续版本。
+- 不做 imports、自动激活或 slash command；这些留给后续版本。
+- **MCP 来源的 skill 默认不发现**：`[skills] mcp = false`，要按服务器 `skills = true` 才开。
+  开启后：来源在索引与正文里都标成 `mcp:<server>`；正文按清单的 size + SHA-256 与
+  frontmatter 逐字段校验（内容绑定）；`resources: "dynamic"` 的 skill 拒载；跨服务器读
+  不做；不落磁盘缓存；`allowed-tools` 照旧忽略。
+- 不宣称 SEP-2640 host 合规：`host-exec-gate-while-acting` 与
+  `host-no-implicit-local-execution` 依赖「统一的执行闸门」，那是独立问题（ADR-0108
+  「推翻三」）。
 
 ## 8. 配置
 
 ```toml
 [skills]
 enabled = true   # 默认 true
+mcp = false      # 是否允许 MCP server 贡献 skill 索引（默认 false，ADR-0108）
 roots = ["~/space/skills/skills"]   # 额外目录，可选
+
+[[mcp.servers]]
+name = "github"
+skills = true    # 缺省继承 [skills] mcp；`false` 可以按服务器关掉
 ```
 
 ## 9. 测试
@@ -103,3 +122,5 @@ roots = ["~/space/skills/skills"]   # 额外目录，可选
   超限、symlink 目录与 `SKILL.md`。
 - `skill` 工具：正文+附件清单、读取附件、路径逃逸、绝对路径、symlink、二进制、未知 skill。
 - 索引预算截断；引擎端到端（索引 → `skill` 调用 → tool_result）。
+- MCP 来源（ADR-0108）：配置双闸门、`mcp:<server>` 来源标记、同名不遮蔽、清单
+  size/digest 校验、frontmatter 逐字段比对、超限不索引、`dynamic` 拒载、未列文件不发请求。

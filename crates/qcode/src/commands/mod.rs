@@ -9,7 +9,7 @@ use qcode_core::question::{InteractiveQuestioner, Questioner};
 use qcode_core::store::SessionStore;
 use qcode_core::tool::Tool;
 use qcode_kernel::config;
-use qcode_tools::skills::SkillSet;
+use qcode_tools::skills::{Lookup, SkillSet};
 use qcode_tools::subagent::SubagentTool;
 use qcode_tui::SkillView;
 use std::io::IsTerminal;
@@ -103,17 +103,33 @@ pub(crate) fn activated_prompt(
     name: &str,
     task: String,
 ) -> Result<String, Box<dyn std::error::Error>> {
-    let Some(skill) = skills.get(name) else {
-        let available: Vec<&str> = skills
-            .iter()
-            .take(20)
-            .map(|skill| skill.name.as_str())
-            .collect();
-        return Err(qcode_i18n::trp(
-            "err.cli.mod.unknown_skill",
-            &[name, available.join(", ").as_str()],
-        )
-        .into());
+    let skill = match skills.lookup(name) {
+        Lookup::Found(skill) => skill,
+        Lookup::Unknown => {
+            let available: Vec<&str> = skills
+                .iter()
+                .take(20)
+                .map(|skill| skill.name.as_str())
+                .collect();
+            return Err(qcode_i18n::trp(
+                "err.cli.mod.unknown_skill",
+                &[name, available.join(", ").as_str()],
+            )
+            .into());
+        }
+        Lookup::Ambiguous(candidates) => {
+            // `/skills <name>` cannot name an origin, so say which origins
+            // exist rather than picking one (ADR-0108 §3).
+            let origins: Vec<String> = candidates
+                .iter()
+                .map(|skill| skill.source.origin_label())
+                .collect();
+            return Err(qcode_i18n::trp(
+                "tool.err.skill.ambiguous",
+                &[name, origins.join(", ").as_str()],
+            )
+            .into());
+        }
     };
     let task = if task.trim().is_empty() {
         qcode_i18n::tr("err.cli.mod.follow_skill").into_owned()
@@ -134,7 +150,7 @@ pub(crate) fn skill_views(skills: &SkillSet) -> Vec<SkillView> {
             name: skill.name.clone(),
             source: skill.source.label().to_string(),
             description: skill.description.clone(),
-            dir: skill.dir.display().to_string(),
+            dir: skill.dir.location(),
             body: skill.body.clone(),
             files: skill.files.clone(),
             files_truncated: skill.files_truncated,

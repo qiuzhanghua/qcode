@@ -493,6 +493,14 @@ impl ConfigEdit {
 
         self.set_bool(&["skills", "enabled"], config.skills.enabled)?;
         self.set_path_array(&["skills", "roots"], &config.skills.roots)?;
+        // ADR-0108 §1: written only when it differs from the default, so a save
+        // by a user who never turned this on does not grow a key they did not
+        // write — the same rule as `[mcp] sandbox` just below (ADR-0065 §8).
+        if config.skills.mcp {
+            self.set_bool(&["skills", "mcp"], true)?;
+        } else {
+            self.remove(&["skills", "mcp"]);
+        }
 
         self.set_bool(&["search", "enabled"], config.search.enabled)?;
         self.set_str(&["search", "backend"], config.search.backend.name())?;
@@ -718,6 +726,12 @@ impl ConfigEdit {
             }
             if let Some(mode) = server.sandbox {
                 table.insert("sandbox", Item::Value(Value::from(mode.label())));
+            }
+            // ADR-0108 §1. `Some(false)` is meaningful (an explicit opt-out
+            // under a crate-wide `true`), so this writes whenever it is set and
+            // stays silent when it is not.
+            if let Some(skills) = server.skills {
+                table.insert("skills", Item::Value(Value::from(skills)));
             }
             servers.push(table);
         }
@@ -1433,6 +1447,57 @@ roots = ["~/skills"]
         assert_eq!(loaded.mcp.servers.len(), 1);
         assert_eq!(loaded.mcp.servers[0].timeout_secs, 7);
         assert!(!loaded.mcp.servers[0].enabled);
+    }
+
+    /// ADR-0108 §1: the two switches survive a save, and the defaults do not
+    /// grow keys nobody wrote.
+    ///
+    /// Two failure modes this pins down. `apply_config` replaces the whole
+    /// `[[mcp.servers]]` array, so a field left out of the writer is dropped on
+    /// the next save — a hand-written `skills = true` would silently turn
+    /// itself off the first time anyone edited an unrelated field. And the
+    /// crate-wide `[skills] mcp` must stay absent while it is `false`, or every
+    /// save would add a key to a config file that never had it.
+    #[test]
+    fn skills_over_mcp_survives_a_save_and_stays_out_of_the_file_by_default() {
+        use qcode_mcp::McpServerConfig;
+
+        // Untouched: no `mcp` key appears anywhere.
+        let dir = temp();
+        let path = dir.path().join("config.toml");
+        let mut edit = ConfigEdit::open(&path).expect("open");
+        edit.apply_config(&crate::config::Config::default())
+            .expect("apply");
+        edit.save().expect("save");
+        let text = std::fs::read_to_string(&path).expect("read");
+        assert!(
+            !text.contains("mcp = "),
+            "default must not be written: {text}"
+        );
+        let loaded = crate::config::load(&path).expect("valid");
+        assert!(!loaded.skills.mcp);
+
+        // Both switches set, both survive.
+        let mut config = crate::config::Config::default();
+        config.skills.mcp = true;
+        config.mcp.servers.push(McpServerConfig {
+            name: "github".to_string(),
+            command: Some("gh-mcp".to_string()),
+            skills: Some(false),
+            ..Default::default()
+        });
+        let dir = temp();
+        let path = dir.path().join("config.toml");
+        let mut edit = ConfigEdit::open(&path).expect("open");
+        edit.apply_config(&config).expect("apply");
+        edit.save().expect("save");
+        let loaded = crate::config::load(&path).expect("valid");
+        assert!(loaded.skills.mcp);
+        assert_eq!(
+            loaded.mcp.servers[0].skills,
+            Some(false),
+            "an explicit per-server opt-out must survive the round trip"
+        );
     }
 
     #[test]

@@ -1023,6 +1023,11 @@ pub(crate) fn mcp_server_from_cells(
             .collect(),
         credentials: credential_presets(&grant.credentials).0,
         sandbox: parse_sandbox_mode(grant.sandbox.as_deref()),
+        // No column yet (ADR-0108 §6 adds one in M8). Until then the grid must
+        // not be a lossy round trip: saving any other cell would otherwise
+        // reset a hand-written `skills = true` back to `None` and silently
+        // switch the server's skills off.
+        skills: previous.and_then(|old| old.skills),
     })
 }
 

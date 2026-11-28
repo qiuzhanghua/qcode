@@ -166,7 +166,9 @@ use qcode_core::tool::{Tool, ToolRegistry};
 use qcode_mcp::McpConfig;
 use qcode_tools::builtin_registry_with_env;
 use qcode_tools::sandbox::{Sandbox, SandboxMode, SandboxNetwork};
-use qcode_tools::skills::{SkillSet, SkillSource, SkillTool};
+use qcode_tools::skills::{
+    ServedFile, Skill, SkillDir, SkillEntry, SkillSet, SkillSource, SkillTool,
+};
 use qcode_tools::web_search::WebSearch;
 pub struct ToolWiring {
     /// Proxy variables the egress layer injects into every child.
@@ -179,27 +181,60 @@ pub struct ToolWiring {
     pub shell_env: Arc<qcode_tools::shell_env::ShellEnvCache>,
 }
 
-pub async fn build_tools(
+/// Connect every configured MCP server and hand back what it produced.
+///
+/// Split out of [`build_tools`] by ADR-0108 §2, because the skill index needs
+/// the servers' `skills/list` answers and the index is built *before* the tool
+/// registry. Connecting inside `build_tools` would mean either connecting twice
+/// (two processes per server) or indexing skills the tool registry has not seen
+/// yet. One connection, read what it says, then build the registry.
+pub async fn connect_mcp(
     mcp: &McpConfig,
-    search: &config::SearchConfig,
     workspace: &Path,
     data_dir: &Path,
-    skills: &Arc<SkillSet>,
     sandbox: Arc<dyn Sandbox>,
-    wiring: ToolWiring,
-) -> ToolRegistry {
-    let ToolWiring {
-        network_env,
-        network,
-        shell_env,
-    } = wiring;
+    wiring: &ToolWiring,
+) -> qcode_mcp::McpConnection {
     // ADR-0070: a bare `command` (`wordcraft-cli`) is the portable spelling, but
     // qcode's own `PATH` is launchd's minimal one when the GUI starts from the
     // Dock. Ask the shell for its environment — the same snapshot `run_shell`
     // uses — and resolve/start the servers with that. Sampled only when a
     // server actually needs it; an absolute `command` costs nothing.
-    let search_path = mcp_search_path(mcp, &shell_env).await;
-    let mut tools = builtin_registry_with_env(sandbox.clone(), shell_env);
+    let search_path = mcp_search_path(mcp, &wiring.shell_env).await;
+    // MCP servers run under a sandbox built from their own grant (ADR-0066),
+    // not `run_shell`'s: the runtime directory is readable and executable,
+    // writes are limited to the workspace plus a private HOME.
+    let confine = mcp_confine(sandbox, workspace);
+    // The remote half of ADR-0067: `Network::client()` is the only client a
+    // streamable-http server may use, so its traffic is allowlisted, audited
+    // and private-address-blocked like every other outbound request.
+    let http = wiring.network.as_ref().map(|network| network.client());
+    qcode_mcp::connect_detailed(
+        mcp,
+        workspace,
+        data_dir,
+        wiring.network_env.as_deref().unwrap_or(&[]),
+        qcode_mcp::ConnectOptions {
+            http: http.as_ref(),
+            confine: Some(confine.as_ref()),
+            path: search_path.as_deref(),
+        },
+    )
+    .await
+}
+
+/// Build the tool registry from an already-connected MCP set.
+///
+/// `mcp` is a [`qcode_mcp::McpConnection`] rather than a config, so this
+/// function never starts a server: see [`connect_mcp`] for why that matters.
+pub async fn build_tools(
+    mcp: qcode_mcp::McpConnection,
+    search: &config::SearchConfig,
+    skills: &Arc<SkillSet>,
+    sandbox: Arc<dyn Sandbox>,
+    shell_env: Arc<qcode_tools::shell_env::ShellEnvCache>,
+) -> ToolRegistry {
+    let mut tools = builtin_registry_with_env(sandbox, shell_env);
     if search.enabled {
         let settings = search.settings(&|key| std::env::var(key).ok());
         if settings.is_usable() {
@@ -212,26 +247,6 @@ pub async fn build_tools(
             );
         }
     }
-    // MCP servers run under a sandbox built from their own grant (ADR-0066),
-    // not `run_shell`'s: the runtime directory is readable and executable,
-    // writes are limited to the workspace plus a private HOME.
-    let confine = mcp_confine(sandbox.clone(), workspace);
-    // The remote half of ADR-0067: `Network::client()` is the only client a
-    // streamable-http server may use, so its traffic is allowlisted, audited
-    // and private-address-blocked like every other outbound request.
-    let http = network.as_ref().map(|network| network.client());
-    let mcp = qcode_mcp::connect_detailed(
-        mcp,
-        workspace,
-        data_dir,
-        network_env.as_deref().unwrap_or(&[]),
-        qcode_mcp::ConnectOptions {
-            http: http.as_ref(),
-            confine: Some(confine.as_ref()),
-            path: search_path.as_deref(),
-        },
-    )
-    .await;
     if !mcp.tools.is_empty() {
         tracing::info!(count = mcp.tools.len(), "registered MCP tools");
     }
@@ -240,13 +255,25 @@ pub async fn build_tools(
     // (ADR-0067 §5). Registering the source is what makes the engine re-read it
     // once per turn; without it the list would stay whatever it was at startup,
     // which is the pre-2026-07-28 behaviour.
-    if let Some(source) = mcp.source {
+    if let Some(source) = mcp.source.clone() {
         tools.add_source(source as std::sync::Arc<dyn qcode_core::tool::ToolSource>);
     }
 
     if !skills.is_empty() {
         tracing::info!(count = skills.len(), "registered the skill tool");
-        tools.extend([Arc::new(SkillTool::new(skills.clone())) as Arc<dyn Tool>]);
+        // A served skill's body is fetched through the connection this registry
+        // was built from (ADR-0108 §4), so the reader and the tools can never
+        // disagree about which servers exist.
+        let tool: Arc<dyn Tool> = match mcp.source.as_ref() {
+            Some(source) => Arc::new(SkillTool::with_reader(
+                skills.clone(),
+                Arc::new(McpSkillReader {
+                    source: source.clone(),
+                }),
+            )),
+            None => Arc::new(SkillTool::new(skills.clone())),
+        };
+        tools.extend([tool]);
     }
 
     tools
@@ -400,6 +427,130 @@ pub fn load_skills(config: &config::SkillsConfig, workspace: &Path) -> Arc<Skill
         return Arc::new(SkillSet::default());
     }
     Arc::new(SkillSet::discover(&skill_roots(config, workspace)))
+}
+
+/// The servers the config lets contribute skills, by label (ADR-0108 §1).
+///
+/// Both switches must agree: `[skills] mcp` (or the server's own `skills`) says
+/// the source is allowed, and `enabled` says the server is running at all. An
+/// allow-listed but disabled server contributes nothing because nothing asked
+/// it — it never connected.
+fn skill_allowed_servers(
+    mcp: &McpConfig,
+    default_allowed: bool,
+) -> std::collections::BTreeSet<String> {
+    mcp.servers
+        .iter()
+        .filter(|server| server.enabled && server.skills_allowed(default_allowed))
+        .map(|server| server.name.clone())
+        .collect()
+}
+
+/// Ask the servers for their skills and turn them into index entries.
+///
+/// Returns an empty vector — not an error — when nothing is allowed or nothing
+/// declares the extension, which is the common case. A listing that fails is
+/// logged and skipped: one server's skills are not worth a failed session.
+pub async fn collect_served_skills(
+    connection: &qcode_mcp::McpConnection,
+    mcp: &McpConfig,
+    default_allowed: bool,
+) -> Vec<qcode_mcp::ServedSkill> {
+    let Some(source) = connection.source.as_ref() else {
+        return Vec::new();
+    };
+    let allowed = skill_allowed_servers(mcp, default_allowed);
+    if allowed.is_empty() {
+        return Vec::new();
+    }
+    let (skills, errors) = source.list_skills(&allowed).await;
+    for error in errors {
+        tracing::warn!(
+            server = %error.server,
+            message = %error.message,
+            "a server's skills are not in the index"
+        );
+    }
+    skills
+}
+
+/// Build the index entries from what the servers listed.
+///
+/// The mapping is deliberately thin: everything that decides whether a skill may
+/// be *loaded* stays in `qcode-tools` (`SkillEntry` + the verification there),
+/// because that is the code that runs when the model asks.
+pub fn served_skills(served: Vec<qcode_mcp::ServedSkill>) -> Vec<Skill> {
+    served
+        .into_iter()
+        .map(|served| {
+            let files: Vec<ServedFile> = served
+                .files
+                .into_iter()
+                .map(|file| ServedFile {
+                    uri: file.uri,
+                    digest: file.digest,
+                    size: file.size,
+                })
+                .collect();
+            // The index shows exactly these two, and they must be the same
+            // strings the body is later checked against — so they are read out
+            // of the frontmatter rather than carried alongside it.
+            let name = qcode_tools::skills::frontmatter_str(&served.frontmatter, "name")
+                .unwrap_or_default()
+                .to_string();
+            let description =
+                qcode_tools::skills::frontmatter_str(&served.frontmatter, "description")
+                    .unwrap_or_default()
+                    .to_string();
+            Skill {
+                name,
+                description,
+                source: SkillSource::Mcp(served.server),
+                dir: SkillDir::Remote {
+                    uri: served.uri.clone(),
+                },
+                // No body: SEP-2640 forbids picking it up before the model
+                // asks, and the index only ever shows `name` + `description`.
+                body: String::new(),
+                files: files
+                    .iter()
+                    .map(|file| file.uri.clone())
+                    .filter(|uri| uri != &served.uri)
+                    .collect(),
+                files_truncated: false,
+                entry: Some(SkillEntry {
+                    uri: served.uri,
+                    files,
+                    dynamic: served.dynamic,
+                    listed: served.frontmatter,
+                }),
+            }
+        })
+        .collect()
+}
+
+/// Reads a served skill's files through the session's own MCP connection
+/// (ADR-0108 §4).
+///
+/// Lives in the kernel because it is the only crate that sees both sides: the
+/// tool layer must not depend on `qcode-mcp`, and `qcode-mcp` must not know what
+/// a skill is.
+struct McpSkillReader {
+    source: Arc<qcode_mcp::McpToolSource>,
+}
+
+/// The reader a session's skill tool gets for its served skills.
+pub fn mcp_skill_reader(
+    source: Arc<qcode_mcp::McpToolSource>,
+) -> Arc<dyn qcode_tools::skills::RemoteSkillReader> {
+    Arc::new(McpSkillReader { source })
+}
+
+#[async_trait::async_trait]
+impl qcode_tools::skills::RemoteSkillReader for McpSkillReader {
+    async fn read_uri(&self, server: &str, uri: &str) -> Result<Vec<u8>, String> {
+        self.source.read_resource(server, uri).await
+    }
 }
 
 /// All discovery roots in increasing precedence: global, user, configured,
@@ -704,24 +855,29 @@ pub async fn assemble(
         .clone()
         .map(|egress| egress as qcode_core::network::SharedNetwork);
     let provider = build_provider(&resolved, egress.as_ref().map(|egress| egress.proxy_url()))?;
-    let skills = load_skills(&loaded.skills, cwd);
     let shell_env = std::sync::Arc::new(qcode_tools::shell_env::ShellEnvCache::new(
         loaded.shell.clone(),
     ));
-    let tools = build_tools(
-        &loaded.mcp,
-        &loaded.search,
-        cwd,
-        &data_dir,
-        &skills,
-        sandbox,
-        ToolWiring {
-            network_env: network.as_ref().map(|network| network.env()),
-            network: network.clone(),
-            shell_env: shell_env.clone(),
-        },
-    )
-    .await;
+    let wiring = ToolWiring {
+        network_env: network.as_ref().map(|network| network.env()),
+        network: network.clone(),
+        shell_env: shell_env.clone(),
+    };
+    // ADR-0108 §2: connect first, so the skill index can include what the
+    // servers serve, then build the registry from that same connection. The
+    // order is the whole point — connecting inside `build_tools` would start
+    // every server twice.
+    let mcp = connect_mcp(&loaded.mcp, cwd, &data_dir, sandbox.clone(), &wiring).await;
+    // ADR-0108 §2: the index is built from the same connection, so a served
+    // skill and the tool that loads it always come from one handshake.
+    let served = collect_served_skills(&mcp, &loaded.mcp, loaded.skills.mcp).await;
+    let skills = if served.is_empty() {
+        load_skills(&loaded.skills, cwd)
+    } else {
+        let local = load_skills(&loaded.skills, cwd);
+        Arc::new((*local).clone().with_served(served_skills(served)))
+    };
+    let tools = build_tools(mcp, &loaded.search, &skills, sandbox, shell_env.clone()).await;
     let store = qcode_core::store::SessionStore::new(data_dir);
     Ok(Assembled {
         config: loaded,

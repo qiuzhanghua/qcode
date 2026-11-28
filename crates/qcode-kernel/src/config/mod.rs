@@ -449,6 +449,15 @@ pub struct SkillsConfig {
     /// the workspace.
     #[serde(default)]
     pub roots: Vec<PathBuf>,
+    /// Whether MCP servers may contribute skills to the index (ADR-0108 §1).
+    ///
+    /// Off by default, and that default is load-bearing twice over: a server's
+    /// skill text would otherwise reach the system prompt without the user ever
+    /// consenting to it, and with this `false` the index is byte-for-byte what
+    /// it was before the feature existed. A server overrides it with
+    /// `[[mcp.servers]].skills = true`.
+    #[serde(default)]
+    pub mcp: bool,
 }
 
 impl Default for SkillsConfig {
@@ -456,6 +465,7 @@ impl Default for SkillsConfig {
         Self {
             enabled: true,
             roots: Vec::new(),
+            mcp: false,
         }
     }
 }

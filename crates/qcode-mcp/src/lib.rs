@@ -293,6 +293,13 @@ pub struct McpConnection {
     /// `None` when no server connected: adding an empty source would just make
     /// the engine do bookkeeping for nothing.
     pub source: Option<Arc<McpToolSource>>,
+    /// Servers that declared the skills extension, by host-assigned label
+    /// (ADR-0108 §2). Empty when none did, which is the common case today.
+    ///
+    /// Carried separately from `source` because the caller needs this even when
+    /// it does not keep the tool source around, and because it must not have to
+    /// reach through an `Option` to learn that no server mentioned skills.
+    pub skill_servers: Vec<String>,
 }
 
 /// `connect_all_with`, but keeping the servers around so their tool tables can
@@ -347,7 +354,15 @@ pub async fn connect_detailed(
         }
     }
     let source = (!servers.is_empty()).then(|| Arc::new(McpToolSource { servers }));
-    McpConnection { tools, source }
+    let skill_servers = source
+        .as_ref()
+        .map(|source| source.skill_servers())
+        .unwrap_or_default();
+    McpConnection {
+        tools,
+        source,
+        skill_servers,
+    }
 }
 
 /// Dispatch on the transport, then hand both arms to [`finish`].
@@ -683,11 +698,284 @@ impl ServerHandle {
         let (tools, ttl) = fetch_tools(&self.name, &self.service, self.timeout).await?;
         Ok(self.table.replace(tools, ttl))
     }
+
+    /// Whether this server declared the skills extension (SEP-2640, ADR-0108).
+    ///
+    /// The declaration is what the handshake said, not what the server answers:
+    /// a client must not call `skills/list` against a server that never
+    /// declared it. `qc doctor --probe` is where a mismatch gets noticed.
+    fn supports_skills(&self) -> bool {
+        self.capabilities.supports_skills()
+    }
+
+    /// The host-assigned label for this server (ADR-0108 §3).
+    ///
+    /// Deliberately the config name, never `serverInfo.name`: SEP-2640 requires
+    /// the label to be the host's own so that two servers disagreeing about
+    /// their self-reported name cannot collide into one namespace.
+    fn label(&self) -> &str {
+        &self.name
+    }
 }
 
 /// Every connected server, exposed as one refreshable tool source.
 pub struct McpToolSource {
     servers: Vec<ServerHandle>,
+}
+
+/// One skill a server listed, in the host's own words rather than rmcp's.
+///
+/// The kernel turns these into `qcode_tools::skills::Skill`; keeping the wire
+/// types out of that crate is what lets `qcode-tools` stay transport-agnostic.
+#[derive(Debug, Clone)]
+pub struct ServedSkill {
+    /// The host-assigned label of the server that served it (ADR-0108 §3).
+    pub server: String,
+    /// The uri of its `SKILL.md`.
+    pub uri: String,
+    /// The complete frontmatter, `name` and `description` included.
+    ///
+    /// All of it rather than only the two display fields: this is what the user
+    /// was shown, and it is what the body is later checked against.
+    pub frontmatter: serde_json::Map<String, serde_json::Value>,
+    /// Every file, `SKILL.md` included. Empty when `dynamic`.
+    pub files: Vec<ServedSkillFile>,
+    /// The server published `resources: "dynamic"`: no digests, so no content
+    /// binding.
+    pub dynamic: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct ServedSkillFile {
+    pub uri: String,
+    pub digest: String,
+    pub size: u64,
+}
+
+/// Why one server's skills are not in the index.
+#[derive(Debug)]
+pub struct SkillListingError {
+    pub server: String,
+    pub message: String,
+}
+
+impl McpToolSource {
+    /// Servers that declared the skills extension, by host-assigned label
+    /// (ADR-0108 §2).
+    ///
+    /// A declaration is necessary but not sufficient: whether those skills are
+    /// actually indexed is the config's call, which the caller applies. Kept
+    /// here so the answer comes from the same handshake that produced the tool
+    /// table, rather than from a second connection.
+    pub fn skill_servers(&self) -> Vec<String> {
+        self.servers
+            .iter()
+            .filter(|server| server.supports_skills())
+            .map(|server| server.label().to_string())
+            .collect()
+    }
+
+    /// Ask every server that both declared the extension and is allowed by the
+    /// config for its skill listing (ADR-0108 §2).
+    ///
+    /// `allowed` is the config's answer, applied here rather than by the caller
+    /// so that a server the user did not opt into is never asked: a request for
+    /// skills is itself a disclosure that this session is interested in them.
+    ///
+    /// One server's failure does not affect the others — the same rule the tool
+    /// table follows — and nothing here is fatal: an unreadable listing means
+    /// fewer skills, not a broken session.
+    pub async fn list_skills(
+        &self,
+        allowed: &std::collections::BTreeSet<String>,
+    ) -> (Vec<ServedSkill>, Vec<SkillListingError>) {
+        let mut skills = Vec::new();
+        let mut errors = Vec::new();
+        for server in self
+            .servers
+            .iter()
+            .filter(|server| server.supports_skills())
+        {
+            let label = server.label().to_string();
+            if !allowed.contains(&label) {
+                tracing::debug!(
+                    server = %label,
+                    "declares the skills extension but `skills` is off for it; not asking"
+                );
+                continue;
+            }
+            match server.list_all_skills().await {
+                Ok(listed) => {
+                    tracing::info!(server = %label, count = listed.len(), "mcp skills listed");
+                    skills.extend(listed);
+                }
+                Err(message) => {
+                    tracing::warn!(server = %label, %message, "skills/list failed; skipping");
+                    errors.push(SkillListingError {
+                        server: label,
+                        message,
+                    });
+                }
+            }
+        }
+        (skills, errors)
+    }
+
+    /// The bytes of one resource, from the server the skill came from.
+    ///
+    /// Bound to the labelled server: a skill served by A must never be able to
+    /// cause a read against B (ADR-0108 §4).
+    pub async fn read_resource(&self, server: &str, uri: &str) -> Result<Vec<u8>, String> {
+        let handle = self
+            .servers
+            .iter()
+            .find(|handle| handle.label() == server)
+            // i18n:keep 内部调用诊断（服务器标签由本进程分配），受众是日志
+            .ok_or_else(|| format!("no server labelled '{server}'"))?;
+        handle.read_resource_bytes(uri).await
+    }
+}
+
+impl ServerHandle {
+    /// `skills/list`, following the cursor to the end.
+    ///
+    /// A paginated listing is the normal case for a server with many skills, and
+    /// stopping at the first page would silently drop the rest. The page count is
+    /// bounded so a server that always returns a cursor cannot spin here.
+    async fn list_all_skills(&self) -> Result<Vec<ServedSkill>, String> {
+        const MAX_PAGES: usize = 64;
+        let mut skills = Vec::new();
+        let mut cursor: Option<rmcp::model::Cursor> = None;
+        for _ in 0..MAX_PAGES {
+            // Built through serde: `PaginatedRequestParams` is
+            // `#[non_exhaustive]`, so a protocol field appearing later must not
+            // break this call.
+            let params = match cursor.clone() {
+                Some(cursor) => serde_json::from_value(serde_json::json!({ "cursor": cursor }))
+                    .map_err(|error| error.to_string())?,
+                None => None,
+            };
+            let result = self
+                .service
+                .list_skills(params)
+                .await
+                .map_err(|error| error.to_string())?;
+            for skill in result.skills {
+                match self.served_skill(skill) {
+                    Ok(skill) => skills.push(skill),
+                    Err(message) => {
+                        tracing::warn!(server = %self.label(), %message, "skipping a listed skill");
+                    }
+                }
+            }
+            match result.next_cursor {
+                Some(next) => cursor = Some(next),
+                None => return Ok(skills),
+            }
+        }
+        Err(format!(
+            // i18n:keep 协议层诊断，受众是日志
+            "skills/list did not finish within {MAX_PAGES} pages"
+        ))
+    }
+
+    /// One wire entry, checked for the things the index depends on.
+    ///
+    /// A skill whose manifest is self-inconsistent is dropped here rather than
+    /// carried as a half-known entry: the index shows what the user is asked to
+    /// trust, so it must only show entries that can be verified later.
+    fn served_skill(&self, skill: rmcp::model::Skill) -> Result<ServedSkill, String> {
+        if !skill.uri.ends_with("/SKILL.md") {
+            // i18n:keep 协议层诊断，受众是日志
+            return Err(format!("{} is not a SKILL.md uri", skill.uri));
+        }
+        let (files, dynamic) = match skill.resources {
+            rmcp::model::SkillResources::Files(files) => (files, false),
+            rmcp::model::SkillResources::Dynamic => (Vec::new(), true),
+            // A future variant is a manifest this host cannot verify, so it is
+            // treated the way `dynamic` is: listed, never loadable.
+            _ => (Vec::new(), true),
+        };
+        let files: Vec<ServedSkillFile> = files
+            .into_iter()
+            .map(|file| ServedSkillFile {
+                uri: file.uri,
+                digest: file.digest,
+                size: file.size,
+            })
+            .collect();
+        // The `SKILL.md` itself must be in the manifest; without its digest
+        // there is nothing to check the body against, which is the whole point
+        // of the entry.
+        if !dynamic && !files.iter().any(|file| file.uri == skill.uri) {
+            return Err(format!(
+                // i18n:keep 协议层诊断，受众是日志
+                "{} is listed as a skill but its manifest omits SKILL.md's digest",
+                skill.uri
+            ));
+        }
+        Ok(ServedSkill {
+            server: self.label().to_string(),
+            uri: skill.uri,
+            // Rebuilt into one map, `extra` included: rmcp splits the wire
+            // object into `name` / `description` / everything-else, and the
+            // comparison needs it as the single object the server sent.
+            frontmatter: {
+                let rmcp::model::SkillFrontmatter {
+                    name,
+                    description,
+                    extra,
+                    ..
+                } = skill.frontmatter;
+                let mut map = extra;
+                map.insert("name".to_string(), serde_json::Value::String(name));
+                map.insert(
+                    "description".to_string(),
+                    serde_json::Value::String(description),
+                );
+                map
+            },
+            files,
+            dynamic,
+        })
+    }
+
+    /// One `resources/read`, as bytes.
+    async fn read_resource_bytes(&self, uri: &str) -> Result<Vec<u8>, String> {
+        let params: rmcp::model::ReadResourceRequestParams =
+            serde_json::from_value(serde_json::json!({ "uri": uri }))
+                .map_err(|error| error.to_string())?;
+        let result = self
+            .service
+            .read_resource(params)
+            .await
+            .map_err(|error| error.to_string())?;
+        let mut contents = result.contents.into_iter();
+        let first = contents
+            .next()
+            // i18n:keep 协议层诊断，受众是模型与日志（ADR-0105 §5）
+            .ok_or_else(|| format!("{uri} returned no content"))?;
+        if contents.next().is_some() {
+            // i18n:keep 协议层诊断，受众是模型与日志（ADR-0105 §5）
+            return Err(format!("{uri} returned more than one content block"));
+        }
+        match first {
+            rmcp::model::ResourceContents::TextResourceContents { text, .. } => {
+                Ok(text.into_bytes())
+            }
+            rmcp::model::ResourceContents::BlobResourceContents { blob, .. } => {
+                use base64::Engine as _;
+                base64::engine::general_purpose::STANDARD
+                    .decode(blob.as_bytes())
+                    .map_err(|error| format!("{uri}: {error}"))
+            }
+            // rmcp marks this enum non-exhaustive; a future variant is a
+            // transport this host cannot hash, so it is reported rather than
+            // guessed at.
+            // i18n:keep 协议层诊断，受众是模型与日志（ADR-0105 §5）
+            other => Err(format!("{uri}: unsupported content {other:?}")),
+        }
+    }
 }
 
 #[async_trait]
@@ -911,6 +1199,12 @@ pub struct DeclaredCapabilities {
     pub tools: bool,
     pub resources: bool,
     pub prompts: bool,
+    /// SEP-2640: the server serves skills (ADR-0108). Declaring it commits the
+    /// server to `skills/list` and `skills/get`.
+    pub skills: bool,
+    /// SEP-2640's optional `resources/directory/read`. Only meaningful when
+    /// `skills` is set, and a client must not call it otherwise.
+    pub directory_read: bool,
 }
 
 impl DeclaredCapabilities {
@@ -920,6 +1214,8 @@ impl DeclaredCapabilities {
             tools: capabilities.tools.is_some(),
             resources,
             prompts,
+            skills: capabilities.supports_skills(),
+            directory_read: capabilities.supports_directory_read(),
         }
     }
 
@@ -1185,6 +1481,42 @@ mod tests {
         assert_eq!(declared_extras(&caps(true, false)), (true, false));
         assert_eq!(declared_extras(&caps(false, true)), (false, true));
         assert_eq!(declared_extras(&caps(true, true)), (true, true));
+    }
+
+    /// ADR-0108: the skills declaration rides in `capabilities.extensions`, and
+    /// `directoryRead` is a sub-setting of it rather than a sibling.
+    ///
+    /// A server that declares neither must read as `false` on both — the whole
+    /// design leans on "absent means no", because an absent declaration is what
+    /// every server in the wild sends today.
+    #[test]
+    fn the_skills_extension_is_read_from_capabilities() {
+        // Parsed from JSON rather than built field by field, because the
+        // interesting failure is the wire shape: `extensions` is a map keyed by
+        // the extension identifier, and `directoryRead` is a sub-setting.
+        let with = |extensions: serde_json::Value| {
+            let capabilities: ServerCapabilities =
+                serde_json::from_value(serde_json::json!({ "extensions": extensions }))
+                    .expect("capabilities");
+            DeclaredCapabilities::from_wire(&capabilities)
+        };
+
+        let absent = with(serde_json::Value::Null);
+        assert!(!absent.skills);
+        assert!(!absent.directory_read);
+
+        let plain = with(serde_json::json!({"io.modelcontextprotocol/skills": {}}));
+        assert!(plain.skills, "an empty object still declares the extension");
+        assert!(!plain.directory_read);
+
+        let directory =
+            with(serde_json::json!({"io.modelcontextprotocol/skills": {"directoryRead": true}}));
+        assert!(directory.skills);
+        assert!(directory.directory_read);
+
+        // A different extension says nothing about skills.
+        let other = with(serde_json::json!({"io.modelcontextprotocol/tasks": {}}));
+        assert!(!other.skills);
     }
 
     /// A modern peer is defined by the lifecycle, not by a version string we

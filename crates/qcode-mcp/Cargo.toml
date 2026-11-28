@@ -20,6 +20,7 @@ path = "tests/support/http_probe_server.rs"
 qcode-core = { version = "0.20.0", path = "../qcode-core" }
 qcode-i18n = { version = "0.20.0", path = "../qcode-i18n" }
 async-trait.workspace = true
+base64.workspace = true
 # Header types for the HTTP transport's `custom_headers`, and the same `http`
 # rmcp itself depends on (one version in the graph, so the types unify).
 http.workspace = true

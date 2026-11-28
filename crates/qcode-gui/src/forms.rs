@@ -491,6 +491,13 @@ pub const FIELDS: &[FieldSpec] = &[
         help: "gui.setup.spec.skills.roots.help",
     },
     FieldSpec {
+        path: &["skills", "mcp"],
+        label: "gui.setup.spec.skills.mcp.label",
+        page: Page::Skills,
+        kind: FieldKind::Bool,
+        help: "gui.setup.spec.skills.mcp.help",
+    },
+    FieldSpec {
         path: &["update", "enabled"],
         label: "gui.setup.spec.update.enabled.label",
         page: Page::Update,

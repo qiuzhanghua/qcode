@@ -1458,6 +1458,13 @@ gui:
         help:
           en: "One path per line; ~/ is expanded"
           zh-CN: "每行一个路径；`~/` 会展开"
+      skills.mcp:
+        label:
+          en: "Let MCP servers contribute skills"
+          zh-CN: "允许 MCP 服务器提供技能"
+        help:
+          en: "Off by default. Only servers that declare the extension are asked, and each one still refuses unless its own `skills` is on — a server's text then reaches the system prompt, so this is consent, not a setting"
+          zh-CN: "默认关闭。只会询问声明了该扩展的服务器，而且每个服务器还需要自身 `skills` 打开——服务器的文字会进入 system prompt，所以这是一种授权，不只是开关"
       update.enabled:
         label:
           en: "Enable version checks"
@@ -2068,6 +2075,45 @@ tool:
       read:
         en: "%{0}: cannot read: %{1}"
         zh-CN: "%{0}：读不了：%{1}"
+      ambiguous:
+        en: "'%{0}' is served by more than one origin (%{1}); pass `source` to pick one"
+        zh-CN: "「%{0}」有多个来源（%{1}）；请用 `source` 指定一个"
+      too_many_files:
+        en: "%{0} files; a served skill may list at most %{1}"
+        zh-CN: "%{0} 个文件；服务器提供的技能最多 %{1} 个"
+      too_many_bytes:
+        en: "%{0} bytes; a served skill may total at most %{1}"
+        zh-CN: "%{0} 字节；服务器提供的技能总量最多 %{1}"
+      size_mismatch:
+        en: "%{0}: expected %{1} bytes, got %{2}"
+        zh-CN: "%{0}：应为 %{1} 字节，实际 %{2} 字节"
+      digest_mismatch:
+        en: "%{0}: content does not match the digest the server listed"
+        zh-CN: "%{0}：内容与服务器列出的摘要不符"
+      frontmatter_mismatch:
+        en: "the served skill's `%{0}` is %{1}, but the file says %{2}"
+        zh-CN: "服务器描述的 `%{0}` 是 %{1}，但文件里写的是 %{2}"
+      frontmatter_extra:
+        en: "the file has a `%{0}` field the listing does not, so the skill you reviewed is not the one being loaded"
+        zh-CN: "文件里有清单没有的 `%{0}`，说明你审核过的技能和要加载的不是同一个"
+      frontmatter_unparseable:
+        en: "the served SKILL.md frontmatter is not valid YAML: %{0}"
+        zh-CN: "服务器给的 SKILL.md frontmatter 不是合法 YAML：%{0}"
+      frontmatter_not_mapping:
+        en: "the served SKILL.md frontmatter is not a mapping"
+        zh-CN: "服务器给的 SKILL.md frontmatter 不是键值映射"
+      unlisted_file:
+        en: "that file is not in the skill's manifest; the server's listing changed"
+        zh-CN: "该文件不在技能的清单里；服务器给出的清单变了"
+      dynamic:
+        en: "the server publishes no digests for this skill, so its content cannot be verified"
+        zh-CN: "服务器没给这个技能的摘要，内容无法校验"
+      no_reader:
+        en: "skill '%{0}' is served over MCP but nothing can fetch it in this session"
+        zh-CN: "技能「%{0}」由 MCP 提供，但本次会话里没有可用的读取通道"
+      remote_read_failed:
+        en: "reading %{0} from %{1} failed: %{2}"
+        zh-CN: "从 %{1} 读 %{0} 失败：%{2}"
       symlink:
         en: "%{0}: a skill directory must not be a symlink"
         zh-CN: "%{0}：技能目录不能是符号链接"
@@ -3508,8 +3554,14 @@ cli:
         en: "cannot start the egress proxy, remote servers will be skipped: %{0}"
         zh-CN: "起不了出网代理，远程服务器会被跳过：%{0}"
       mcp_probe_ok:
-        en: "protocol %{0} · declares tools=%{1} resources=%{2} prompts=%{3} · registered %{4}%{5}"
-        zh-CN: "协议 %{0} · 声明 tools=%{1} resources=%{2} prompts=%{3} · 已注册 %{4}%{5}"
+        en: "protocol %{0} · declares tools=%{1} resources=%{2} prompts=%{3} · registered %{4}%{5}%{6}"
+        zh-CN: "协议 %{0} · 声明 tools=%{1} resources=%{2} prompts=%{3} · 已注册 %{4}%{5}%{6}"
+      mcp_probe_skills:
+        en: " · declares skills (directory read: %{0})"
+        zh-CN: " · 声明 skills（目录读取：%{0}）"
+      mcp_probe_skills_not_indexed:
+        en: " · skills are not indexed; set skills = true for this server (ADR-0108)"
+        zh-CN: " · skills 未进索引；需要为这个服务器设 skills = true（ADR-0108）"
       mcp_probe_instructions:
         en: " · instructions %{0} bytes"
         zh-CN: " · instructions %{0} 字节"

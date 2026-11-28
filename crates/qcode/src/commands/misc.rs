@@ -154,12 +154,14 @@ pub(crate) fn cmd_skills(
                 "cli.skills.skill_line",
                 &[
                     skill.name.as_str(),
-                    skill.source.label(),
+                    // `origin_label`, not `label`: `mcp:<server>` keeps a served
+                    // skill from reading as a local one (ADR-0108 §3).
+                    skill.source.origin_label().as_str(),
                     skill.files.len().to_string().as_str()
                 ]
             )
         );
-        println!("  {}", skill.dir.display());
+        println!("  {}", skill.dir.location());
         println!("  {}", skill.description.replace('\n', " "));
     }
     println!(

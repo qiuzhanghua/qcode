@@ -88,20 +88,17 @@ async fn tools_for(
     let shell_env = std::sync::Arc::new(qcode_tools::shell_env::ShellEnvCache::new(
         loaded.shell.clone(),
     ));
-    let tools = qcode_kernel::build_tools(
-        &loaded.mcp,
-        &loaded.search,
-        workspace,
-        data_dir,
-        &skills,
-        sandbox,
-        ToolWiring {
-            network_env: network.as_ref().map(|network| network.env()),
-            network,
-            shell_env,
-        },
-    )
-    .await;
+    let wiring = ToolWiring {
+        network_env: network.as_ref().map(|network| network.env()),
+        network,
+        shell_env: shell_env.clone(),
+    };
+    // ADR-0108 §2's order: connect, then build. This test is about the egress
+    // path a remote server takes, so it exercises the same two steps `assemble`
+    // does rather than a shortcut.
+    let mcp =
+        qcode_kernel::connect_mcp(&loaded.mcp, workspace, data_dir, sandbox.clone(), &wiring).await;
+    let tools = qcode_kernel::build_tools(mcp, &loaded.search, &skills, sandbox, shell_env).await;
     // `specs()` is what the model sees, so the assertion is on the same list
     // the registry actually hands out. Only the MCP ones matter here: the
     // built-ins are registered no matter what the transport does.

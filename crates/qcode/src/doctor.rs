@@ -845,6 +845,34 @@ impl Doctor {
                     .collect::<Vec<_>>()
                     .join(", ")
             };
+            // ADR-0108: a server that declares skills is worth saying out loud,
+            // and so is the case where it declares them but the config will not
+            // index them — otherwise "I turned it on and nothing happened" has
+            // no diagnosis.
+            let skills_note = if report.declared.skills {
+                let directory_read = report.declared.directory_read.to_string();
+                let declared = qcode_i18n::trp(
+                    "cli.doctor.detail.mcp_probe_skills",
+                    &[directory_read.as_str()],
+                );
+                let indexed = config.skills.enabled
+                    && config
+                        .mcp
+                        .servers
+                        .iter()
+                        .find(|server| server.name == report.server)
+                        .is_some_and(|server| server.skills_allowed(config.skills.mcp));
+                if indexed {
+                    declared
+                } else {
+                    format!(
+                        "{declared}{}",
+                        qcode_i18n::tr("cli.doctor.detail.mcp_probe_skills_not_indexed")
+                    )
+                }
+            } else {
+                String::new()
+            };
             self.ok(
                 &label,
                 qcode_i18n::trp(
@@ -863,6 +891,7 @@ impl Doctor {
                             None => String::new(),
                         }
                         .as_str(),
+                        skills_note.as_str(),
                     ],
                 ),
             );

@@ -116,6 +116,21 @@ pub struct McpServerConfig {
     /// Overrides `[mcp] sandbox` for this one server.
     #[serde(default)]
     pub sandbox: Option<McpSandboxMode>,
+    /// Whether this server may contribute skills to the prompt index (ADR-0108 §1).
+    ///
+    /// `None` inherits `[skills] mcp`, which defaults to `false`. Installing a
+    /// server is consent to "it offers tools", not consent to "it writes my
+    /// system prompt"; the two are separate decisions, so this is a separate
+    /// field rather than something `enabled` implies.
+    #[serde(default)]
+    pub skills: Option<bool>,
+}
+
+impl McpServerConfig {
+    /// Whether this server's skills may be indexed, given the crate-wide default.
+    pub fn skills_allowed(&self, default: bool) -> bool {
+        self.skills.unwrap_or(default)
+    }
 }
 
 /// How a server is reached (ADR-0067 §1).
@@ -207,6 +222,7 @@ impl Default for McpServerConfig {
             writable_paths: Vec::new(),
             credentials: Vec::new(),
             sandbox: None,
+            skills: None,
         }
     }
 }
