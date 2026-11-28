@@ -100,8 +100,10 @@ qcode 只解释两个字段：
   frontmatter 逐字段校验（内容绑定）；`resources: "dynamic"` 的 skill 拒载；跨服务器读
   不做；不落磁盘缓存；`allowed-tools` 照旧忽略。
 - 不宣称 SEP-2640 host 合规：`host-exec-gate-while-acting` 与
-  `host-no-implicit-local-execution` 依赖「统一的执行闸门」，那是独立问题（ADR-0108
-  「推翻三」）。
+  `host-no-implicit-local-execution` 要求「按 skill 的显式批准」，而本项目的安全模型是
+  **contained execution**——边界在 MCP 沙箱（默认 `confine`）与每服务器的
+  `read_paths` / `writable_paths` / `credentials`、宿主 `[sandbox]`、网络 `[network] allow`
+  上，不在逐次审批上（ADR-0109）。
 
 ## 8. 配置
 

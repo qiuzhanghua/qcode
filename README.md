@@ -700,6 +700,10 @@ cargo build -p qcode-eval
   开启 `[skills] mcp = true`（或按服务器 `skills = true`）后，声明了 Skills 扩展的 MCP
   server 也会贡献索引条目：来源标成 `mcp:<server>`，正文按清单的 size + SHA-256 与
   frontmatter 校验通过才载入，超限（512 个 resource / 16 MiB）不索引（ADR-0108）。
+  安全边界不在逐次审批上：MCP server 默认 `confine` 沙箱，能读写什么由它的
+  `read_paths` / `writable_paths` / `credentials` 决定；宿主侧由 `[sandbox]` 与
+  `[network] allow` 决定。`[sandbox] mode = "none"` 时宿主侧没有边界——无人值守的任务
+  照常运行，正是因为边界放在配置里而不是弹窗上（ADR-0109）。
 - **MCP（tools + resources + prompts，stdio 与 Streamable HTTP）**：启动时连接启用的
   server，`tools/list` 后以
   `mcp__<server>__<tool>` 注册，默认 ask（规则可按名称放行 / 拒绝）。`tools/call`

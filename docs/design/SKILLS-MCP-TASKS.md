@@ -46,8 +46,8 @@ ADR-0108「推翻三」把这件事从 skills 里摘出来了：`run_shell` 是
 
 | 编号 | 任务 | 产出 | 验收 |
 |---|---|---|---|
-| **B1** ✅ | 立项并写 ADR：执行类工具的默认审批 | ADR-0109（拟议）：`Shell`/`Network` 默认 `Ask`；已声明的 allowlist 免问；交互式三档；无人值守立即拒绝而不是烧 300s | 已写入 `docs/design/DECISIONS.md`；版本号与模板默认 allowlist 两处待定 | — |
-| **B2** | （视 B1）实现统一闸门 | `qcode-core/src/policy.rs`、无人值守路径（`schedule.rs` 的 `UNATTENDED_APPROVAL_TIMEOUT=300s` 不能每个命令烧一次） | 定时任务的多步 skill 流程不被逐命令审批拖死；ADR-0105 文案与 golden 同步 |
+| **B1** ✅ | 执行面的安全模型 | ADR-0109（Accepted）：**不加逐次审批**；边界由 MCP 沙箱 + grants、宿主沙箱、网络 allowlist、skill 摘要绑定负责；无人值守照常运行 | 已写入 `docs/design/DECISIONS.md`；ADR-0108「推翻三」的措辞已按它修订 | — |
+| **B2** | 把边界写进文档与诊断 | README / `SKILLS.md` §7 / `qc doctor` 说明「边界 = 配置」，并点明 `[sandbox] mode = "none"` 的含义 | 文档评审；不改 `policy.rs`、不新增等待 | S |
 
 > 顺序上 B 不阻塞 C/D：只有「对外宣称合规」这一条依赖它。
 

@@ -13881,11 +13881,16 @@ fn approval(...) -> ApprovalClass { ApprovalClass::External }   // mcp/src/tool.
 
 **由此得出的正确结论**
 
-- 缺的不是 skills 的闸门，是**统一的执行闸门**；`run_shell` 的默认值是那个决策，与 skills
-  无关，**不该被 skills 绑架**（它同时也是 `web_fetch` / MCP 结果 / 文件内容三条注入路径的
-  共用缺口）。
-- 在统一闸门存在之前，qcode **不应声明 SEP-2640 host 合规**——`host-exec-gate-while-acting`
-  与 `host-no-implicit-local-execution` 两条明确不满足。写下来是为了不要在一个 Beta 扩展的
+> **2026-11-28 修订**：下面第一条的措辞（「统一的执行闸门」）已被
+> [ADR-0109](#adr-0109执行面的安全由能力边界负责不加逐次审批闸门2026-11-28) 取代——缺的是
+> **统一的能力边界**（MCP 沙箱 + 读写目录 + 网络 allowlist + 宿主沙箱），不是逐次审批。
+> 结论本身（缺口的范围、不得用 skills 特例去补、在补齐前不声称合规）不变。
+
+- 缺的不是 skills 的闸门，是**统一的执行边界**；`run_shell` 的默认值与边界配置是那个
+  决策，与 skills 无关，**不该被 skills 绑架**（它同时也是 `web_fetch` / MCP 结果 /
+  文件内容三条注入路径的共用缺口）。
+- 在那些边界可声明之前（见 ADR-0109），qcode **不应声明 SEP-2640 host 合规**——
+  `host-exec-gate-while-acting` 与 `host-no-implicit-local-execution` 两条明确不满足。写下来是为了不要在一个 Beta 扩展的
   宣传里比实际情况说得更多。
 - 不假装「加了个特例闸门就等于处理了」。
 
@@ -13990,13 +13995,12 @@ P0 按修订后的范围落地：`crates/qcode-tools/src/skills.rs`（身份、�
 - 真实服务器：截至落地仍无已发布实现（`github-mcp-server#3046` 未合并），验收用的是按
   conformance 客户端场景形状写的 stub（`crates/qcode-kernel/tests/mcp_skills.rs`）。
 
-## ADR-0109：统一的执行闸门——`run_shell` 与 `web_fetch` 默认从「直接放行」改为「先问一次」（2026-11-28）
+## ADR-0109：执行面的安全由能力边界负责，不加逐次审批闸门（2026-11-28）
 
-**状态**：拟议（2026-11-28）。本文只定方案，不改代码；落地前 qcode 不声称 SEP-2640
-host 合规（[ADR-0108](#adr-0108skills-走-mcp远程索引按服务器-opt-in推翻-adr-0004-的不做远程安装2026-11-26)
-「推翻三」）。
+**状态**：Accepted（2026-11-28）。本 ADR 取代同日早先那版「`Shell`/`Network` 默认改
+`Ask`」的拟议稿：那版会让无人值守的回合不可用，评审时被否。
 
-**背景：这不是 skills 的问题，是四条注入路径共用的一个洞**
+**背景：缺的是边界，不是弹窗**
 
 ADR-0108 在核对 SEP-2640 的 MUST 时撞上两条：
 
@@ -14005,118 +14009,77 @@ ADR-0108 在核对 SEP-2640 的 MUST 时撞上两条：
 | `sep-2640-host-no-implicit-local-execution` | Hosts MUST NOT allow MCP-served skill content to cause host-side code execution without explicit per-skill user approval | **不满足** |
 | `sep-2640-host-exec-gate-while-acting` | Hosts MUST apply **the same approval gate** to code-execution tool calls issued while the model is acting on an MCP-served skill | **不满足** |
 
-但缺的不是 skills 的闸门，是**统一的执行闸门**。注入路径有四条——`web_fetch` 抓回的
-网页、MCP 工具返回、`read_file` 读到的文件、以及 MCP skill 的正文——它们最后都汇到同一个
-出口：`run_shell`。这个出口今天是**零审批**的：
+注入路径有四条——`web_fetch` 抓回的网页、MCP 工具返回、`read_file` 读到的文件、MCP skill
+的正文——它们最后都汇到同一个出口：`run_shell`。真实的漏洞链是这样的：
 
 ```
 网页/skill/文件内容写「先读 .env 确认配置」
   → prompt 注入，无审批
   → read_file(.env)      Read    → Allow（policy.rs:423）
   → run_shell(...)       Shell   → Allow（policy.rs:431）
-  → 数据出网
+  → web_fetch(攻击者 URL) Network → Allow（policy.rs:429）
 ```
 
-只给 skills 加一道特例闸门，等于给这个洞装一道只挡一个入口的门帘：另外三条照样直通。
+**决定：这条链用「能力」切断，不用「审批」切断**
 
-**现状（2026-11-28 实测，`crates/qcode-core/src/policy.rs:422-433`）**
+1. **不加统一审批闸门**。`Shell` 与 `Network` 的默认值**保持 `Allow`**；无人值守路径
+   （非 TTY 的 `qc run`、定时任务、无人可答的 ACP）照常执行，不新增任何等待。
+2. **安全边界由四层配置负责**，每一层都是「一次声明、长期有效」：
 
-| `ApprovalClass` | 默认 | 谁在用 |
-|---|---|---|
-| `Read` | Allow | `read_file` / `list_dir` / `grep` / `skill` 等 |
-| `WriteInside` | Allow | workspace 内的写 |
-| `WriteOutside` | Ask | workspace 外的写 |
-| `Execute` | Ask | 需要批准的执行类工具 |
-| `External` | Ask | MCP 工具（每次调用都问） |
-| `BulkWrite` | Ask | `apply_patch` |
-| **`Network`** | **Allow** | `web_fetch` / `web_search` |
-| `Question` | Allow | `ask_user` |
-| **`Shell`** | **Allow** | `run_shell` |
-| `Escalation` | Ask | 沙箱提权 |
+| 层 | 管什么 | 默认 | 位置 |
+|---|---|---|---|
+| MCP server 沙箱 | 第三方代码与它加载的 skill 能读写什么 | `confine`，且 `read_paths` / `writable_paths` / `credentials` 默认空 | ADR-0066、`qcode-mcp/src/config.rs` |
+| 宿主沙箱 | `run_shell` 的进程能读写什么 | `[sandbox] mode = "none"`（**已知缺口**，见下） | `qcode-tools/src/sandbox/` |
+| 网络出口 | 能连哪些主机 | `allow = []`、`allow_private = false`、`unknown = "ask"`，全部经 egress 代理与审计 | `[network]`、ADR-0067 |
+| skill 身份 | 载入的是不是清单里那一份 | 来源标签 + size + SHA-256 + frontmatter 逐字段比对 | ADR-0108 §4/§5 |
 
-**与 ADR-0005 已经分叉**：那条 ADR 写「`web_fetch` 默认 ask（`ApprovalClass::Network`），
-不注入凭据」「安全上依赖用户审批」，而实现是 `Allow`，`policy.rs:498-504` 还有一条测试
-**明确断言**「一次只读的网络抓取不需要弹窗」。方向是更宽松，不是笔误——所以本 ADR 要把
-它当决策重做，而不是当 bug 改回去。
+3. **审批只保留在既有、且不挡无人值守的位置**：`External`（MCP 工具）、`Execute`、
+   `WriteOutside`、`BulkWrite`、`Escalation`。这些在无人值守下由 `[approval] allow`
+   规则预先声明，或者被立即拒绝——语义不变，也不新建任何授权点。
+4. `--yes` 语义不变（把 ask 降为 allow，不覆盖 deny）。
 
-三条路径对 Ask 的处理也不一样：
+**为什么不是审批**
 
-| 场景 | 现在的行为 | 位置 |
-|---|---|---|
-| 交互式 `qc run` | `InteractiveApprover` 当场问 | `qcode/src/commands/run.rs:227-233` |
-| 非 TTY `qc run` | `AutoDeny`，**立即**拒绝 | 同上 |
-| GUI | 审批卡，可设截止时间 | `qcode-ui-bridge` |
-| ACP | 走编辑器侧 `session/request_permission` | `qcode-acp` |
-| 定时任务 | 无人应答 → 等 `UNATTENDED_APPROVAL_TIMEOUT`(300s) → Deny，回合继续 | `qcode-core/src/schedule.rs:1084` |
+无人值守下 `Ask` 只有两种结局：定时任务等满 `UNATTENDED_APPROVAL_TIMEOUT`(300s) 再拒
+（`qcode-core/src/schedule.rs:1084`），非 TTY 的 `qc run` 直接拒（`run.rs:227-233` 的
+`AutoDeny`）。一个多步 skill 流程（open → insert → save 三条命令）第一步就失败。而配置与
+沙箱是**一次声明、长期有效**，正好匹配「没人看着也要跑」这个前提。
 
-**决定（推荐方案）**
+**与 SEP-2640 的关系**
 
-把「统一的执行闸门」定义成一条规则，而不是一个新工具或一类新审批：
+两条 MUST 仍然不满足，而且本 ADR **明确不以** per-skill approval 去满足它们：qcode 的
+安全模型是 **contained execution**，不是 per-skill approval。因此继续不声称 SEP-2640
+host 合规，并把这句话写进 [SKILLS.md](./SKILLS.md) §7 与 README。
 
-1. **`Shell` 与 `Network` 的默认值改成 `Ask`**。`Read` / `WriteInside` / `Question` 不动
-   ——读自己 workspace 的文件、问用户问题，都不该弹窗。
-2. **「已声明的 allowlist」免问，且不引入新概念**：
-   - shell：`[approval] allow = ["run_shell:git status *", …]`（`config/mod.rs:511` 的
-     shorthand 已经有这个形状，模板 `security/none.toml:40` 就是它的语法示例）；
-   - 网络：`[network] allow = ["api.example.com:443"]`（已有，`landlock.toml:28`）。
-   声明过的就是「用户已经同意过的」。**授权只在这一个地方发生**，与 ADR-0108 的口径一致。
-3. **交互式的「问」要能变成「不用再问」**：审批提示给三档——本次 / 本会话 / 写进项目配置
-   （第三档直接产出一条规则）。没有这一档，用户会被同一类命令反复打断，最后去开 `--yes`，
-   等于把闸门整体关掉。
-4. **无人值守不再烧 300 秒**：非 TTY 的 `qc run` 与定时任务对 `Ask` **立即拒绝**（与今天
-   的 `AutoDeny` 一致），只有「有活人可能回答」的面（GUI、ACP client）才等
-   `approval_timeout`。ADR-0108 否掉「窗内一律 Ask」的理由正是这 300 秒会让一个多步
-   skill 流程不可用；改成立即拒绝后，定时任务的正确姿势变成**在任务里声明它能跑什么**，
-   而不是「先挂五分钟再失败」。
+**已知缺口（必须如实写在 README 与 `qc doctor`）**
+
+- `[sandbox] mode = "none"` 是默认值：此时宿主侧没有边界，`run_shell` 能做用户能做的
+  一切。这是「默认配置下只有 MCP 侧有边界」的事实，不是遗漏。要收紧就开
+  `sandbox-exec` / `bwrap` / `landlock`（模板已给），但**不在本 ADR 里改默认**——那会改变
+  既有工作流与无人值守行为，属于另一个决策。
+- `[network] unknown = "ask"` 在无人值守下等于拒绝。要跑多主机流程，就把主机写进
+  `[network] allow`——这正是「边界 = 配置」的意思。
 
 **被否决的替代方案**
 
-- **维持现状，只在文档里写清「不声称合规」**。诚实，但让四条注入路径继续零审批；而
-  「模型可以零审批执行任意命令」是本项目最该先解决的一条。作为过渡态可以，作为结论不行。
-- **只改 `Shell`，`Network` 保持 Allow**。挡不住「先 `web_fetch` 抓恶意页，再让模型用
-  现成的网络工具外传」这条链；而且与 ADR-0005 的矛盾仍在。
-- **默认 Ask 但不给「声明」通道**。默认配置下每个 `git status` 都弹窗、`qc run` 无
-  `--yes` 时直接失败。用户的第一反应是 `--yes`，闸门整体失效。
-- **会话级「信任」开关（C 案）**。它把「信任什么」变成整会话的布尔值，而会话通常要跑
-  几十条不同命令；更细的粒度本来就是配置规则能给的，多一层开关只增加一个要解释的概念。
-- **只堵 skills 的入口**。见背景：另外三条注入路径照样直通。
-- **按 `command_prefix` 白名单预置一批「常见安全命令」**（`git status`、`ls`…）。看着友好，
-  实际是把「安全」押在命令名的语义上（`git status` 可以带 `--exec` 吗？`ls` 可以读任意
-  目录吗？）——这正是 `run_shell` 默认 Allow 当初的错。
-
-**后果**
-
-- **破坏性变更**：默认配置下第一次 `run_shell` / `web_fetch` 会问；非 TTY 的 `qc run`
-  在没有 `--yes` 或规则时直接拒绝。按本项目 0.x 的口径这是 minor 可以承载的，但
-  CHANGELOG 必须在顶部点名，并给出一段「迁移：把你常用的命令写进 `[approval] allow`」。
-- `CONFIG_VERSION` **不变**：没有新字段，只有既有字段的默认行为变了。旧配置读进来之后
-  行为**会**变（这正是本 ADR 的目的），所以发布说明要单独列一节。
-- 定时任务：任务定义本来就有 `approval_timeout`（`qcode-driver/src/lib.rs:195`）；本 ADR
-  之后它的语义收窄成「有界面可答时等多久」，无界面时不再使用。
-- SEP-2640 的两条 MUST 在统一闸门落地后**可以**满足——但「合规」这句话还要等
-  ADR-0108 P1 的来源徽章（D 档）一起看，别只凭一条闸门就宣称。
-- 已有的一条测试（`policy.rs:498-504`「read-only network fetch runs without a prompt」）
-  必须改写，且改写本身就是这次决策的记录点。
+- **`Shell`/`Network` 默认 `Ask` + 交互式三档**（同日早先的拟议稿）。交互式能用，但
+  无人值守下不可用；而无人值守是本项目明确要支持的运行方式。
+- **只堵 MCP skill 这一个入口**。另外三条注入路径照样直通，见背景里的链。
+- **默认 `--yes`**。等于取消全部边界，比现状更差。
+- **预置一批「常见安全命令」白名单**（`run_shell:git *` 之类）。命令名不是安全边界：
+  `git` 能执行任意 hook，`ls` 能读任意目录。
 
 **验收**
 
-1. `policy` 单测：`Shell` / `Network` 默认 `Ask`；命中 `[approval] allow` 或
-   `[network] allow` 时 `Allow`；`deny` 永远最高。
-2. 非 TTY `qc run` + `Ask` → 立即拒绝（断言耗时远小于 `UNATTENDED_APPROVAL_TIMEOUT`）。
-3. 定时任务：未声明规则 → 立即拒绝；声明规则 → 正常执行。
-4. 交互式：三档提示各自产生预期结果（一次 / 会话 / 写项目配置）。
-5. 迁移文档 + CHANGELOG 顶部「破坏性变更」一节 + 一份 `[approval] allow` 示例。
+1. `policy.rs` 的默认值一行不改；不新增授权点、不新增等待。
+2. 非 TTY 的 `qc run` 与定时任务在默认配置下照常执行 `run_shell`。
+3. README、[SKILLS.md](./SKILLS.md) §7、`qc doctor` 都写清「边界 = MCP 沙箱 + grants +
+   宿主沙箱 + 网络 allowlist」，并点明 `[sandbox] mode = "none"` 的含义。
+4. [ADR-0108](#adr-0108skills-走-mcp远程索引按服务器-opt-in推翻-adr-0004-的不做远程安装2026-11-26)
+   「推翻三」的结论改为指向本 ADR。
 
 **本 ADR 不做**
 
-- 不做「acting on skill 期间」的特例闸门（ADR-0108 已否）。
-- 不做 GUI 的「信任此目录」面板：先把闸门立起来，面板是它的便利层，可以后做。
-- 不定 `ApprovalClass` 的粒度重构（例如把 `Shell` 再拆成 `ShellRead` / `ShellWrite`）：
-  在闸门本身还不存在的时候讨论粒度是空转。
-
-**待确认（写进本节是因为它们会改变结论的形状）**
-
-1. 破坏性变更的版本号：按 0.x 走 minor（0.21.0），还是直接标 major 语义？
-2. 模板里要不要给一份保守的默认 `[approval] allow`（例如 `run_shell:git *`）？给了更
-   顺手，但「默认放行 git」也意味着 `git push` 不需要问——建议**不给**，让用户从空表开始。
-
+- 不做 per-skill approval 或 acting-window 闸门（与选择的安全模型相反）。
+- 不改 `[sandbox]` 的默认值（另立 ADR）。
+- 不改 `CONFIG_VERSION`。
