@@ -1,5 +1,62 @@
 # Changelog
 
+## 0.21.0 — 2026-11-28
+
+Skills over MCP 落地版：声明了 SEP-2640 Skills 扩展的 MCP 服务器，可以把它的 skill 并进
+system prompt 索引；正文按需取，且必须与清单逐项吻合。同一版里有**会话日志的自愈**
+（磁盘满曾让一个 214 轮的会话彻底打不开）与一条把安全模型写死的 ADR（边界由能力负责，
+不加逐次审批闸门）。**没有破坏性变更**：`CONFIG_VERSION` 仍是 2，新配置项全部默认关，
+schema v13 是加性字段，旧日志照常读。
+
+### 为什么是 minor 而不是 patch
+
+- 新增用户可见能力：MCP 服务器贡献 skill 索引（默认关）、按 TTL 刷新索引、按 URI 加载、
+  工具行的来源徽章、设置页的 `skills` 开关与 `qc skills list` 的提示
+- 行为修复：会话日志写坏一行不再锁死整个会话
+- 没有改配置格式，没有删任何既有字段
+
+### Skills over MCP（ADR-0108，P0 与大部分 P1）
+
+- **配置双闸门**：`[skills] mcp`（默认 `false`）与 `[[mcp.servers]] skills`
+  （`Option<bool>`，缺省继承）；项目级配置不能把它打开
+- **索引**：`skills/list` 并入 prompt，来源标成 `mcp:<server>`；同名不遮蔽，改成报歧义
+  并列出候选来源；默认配置下 prompt 一个字节都不变（不发 `skills/list`）
+- **正文**：`skills/get`（或清单条目）→ `resources/read` → size + SHA-256 + frontmatter
+  逐字段比对；未列在清单里的文件**不发请求**；512 个 resource / 16 MiB 在索引时就拒
+- **按 URI 加载**：`skill(uri=…, source=…)`——清单允许是部分的，服务器也可以在
+  `instructions` 里直接点名 URI，这条是规格要求的入口
+- **热更新**：SEP-2640 **没有** `list_changed` 通知（规格草案与 rmcp 3.9.0 都没有），
+  所以按 `ttlMs` 重列；`SkillIndex` + revision 让下一回合看到新 skill，失败保留旧条目
+- **来源徽章**：schema v13 给工具结果加 `metadata.source`，TUI 与 GUI 的工具行显示
+- `resources: "dynamic"` 的 skill 不索引（没有摘要，加载必然失败）
+- `qc doctor --probe` 报告「声明了 skills / 列了 N 个 skill」
+
+### 会话日志自愈
+
+磁盘满时 `serde_json::to_writer` 会在 append 的文件里留下半行，重试把两个事件粘成一条
+解析不了的行；旧 loader 只丢「末尾半行」，于是该会话每一轮都失败（现场：第 38325 行，
+报 `the 'year' component could not be parsed`）。现在写入先序列化到内存再一次写完、
+失败回滚文件长度；读取跳过坏行与重复行并 WARN，seq 断档一并容忍。
+
+### 安全模型定稿（ADR-0109）
+
+执行面的边界由四层配置负责：MCP server 沙箱（默认 `confine`）与每服务器的
+`read_paths` / `writable_paths` / `credentials`、宿主 `[sandbox]`、网络 `[network] allow`、
+以及 skill 的来源/摘要/frontmatter 绑定。**不加逐次审批闸门**——那会让无人值守的回合不可用。
+`qc doctor` 在无沙箱时的提示改成如实的一句话（`run_shell` 能做你本人能做的一切）。
+不声称 SEP-2640 host 合规：两条 MUST 依赖「按 skill 的显式批准」，与本项目的模型相反。
+
+### OAuth2 设置页收口
+
+密钥来源只留密钥本身（移除 env / command 两种间接来源）、回调地址只留端口（完整地址由
+端口推导）、默认 PKCE。既有配置文件仍可读，配置格式不变。
+
+### 验证
+
+`fmt --all --check`、`clippy --workspace --all-targets -D warnings`、workspace 全量测试
+（144 个 target）、双语 golden 88 项、`cargo deny`、Windows 交叉 type-check 全绿；
+`qc --version` 与 `qcd --version` 自报 0.21.0。
+
 ## 0.20.0 — 2026-11-26
 
 OAuth2 版：provider 多了一种认证形状——可配置的统一认证（授权码 / PKCE 两种登录模式），
