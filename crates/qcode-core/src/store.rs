@@ -487,8 +487,22 @@ impl SessionStore {
             fs::create_dir_all(parent)?;
         }
         let mut file = OpenOptions::new().create(true).append(true).open(path)?;
-        serde_json::to_writer(&mut file, event)?;
-        file.write_all(b"\n")?;
+        // Serialize first, then append one line in a single write. `to_writer`
+        // streams straight into the file, so a write that fails partway (a full
+        // disk, a killed process) leaves a torn prefix behind — and the next
+        // append lands right after it, gluing two events into one unparsable
+        // line. That is how a long session became unreadable in the field
+        // (2026-11-28): `{"v":12,"seq":N,"ts":"` followed by a whole event.
+        let mut line = serde_json::to_vec(event)?;
+        line.push(b'\n');
+        let start = file.metadata()?.len();
+        if let Err(err) = file.write_all(&line) {
+            // Put the file back where it was, so the next append does not
+            // continue a torn line. Best effort: if this fails too, the
+            // loader's corrupt-line skip keeps the session readable.
+            let _ = file.set_len(start);
+            return Err(err.into());
+        }
         file.flush()?;
         // Durability point: a finished turn must survive a crash. Mid-turn
         // events are replayed up to the last complete line.
@@ -660,7 +674,7 @@ impl SessionStore {
         // A newer build may append kinds this reader does not know. Skipping
         // them keeps the log replayable (schema-additive contract); the seq
         // continuity check below then has to tolerate the gap.
-        let mut skipped_unknown = false;
+        let mut tolerate_gap = false;
 
         for (index, line) in lines.iter().enumerate() {
             if line.trim().is_empty() {
@@ -668,21 +682,38 @@ impl SessionStore {
             }
             match serde_json::from_str::<Event>(line) {
                 Ok(event) => {
+                    if let Some(last) = events.last()
+                        && event.seq <= last.seq
+                    {
+                        // A write that succeeded but whose `sync_all` failed (a
+                        // full disk again) is retired by the caller, so the same
+                        // event can land on disk twice. Replaying it twice is
+                        // worse than dropping it: the second copy is a no-op at
+                        // best and a duplicated tool result at worst.
+                        tracing::warn!(
+                            session = %id,
+                            line = index + 1,
+                            seq = event.seq,
+                            last = last.seq,
+                            "skipping a duplicate event line"
+                        );
+                        continue;
+                    }
                     if let Some(last) = events.last() {
                         let expected = last.seq + 1;
                         if event.seq != expected {
-                            if !skipped_unknown {
+                            if !tolerate_gap {
                                 return Err(StoreError::Seq {
                                     expected,
                                     got: event.seq,
                                 });
                             }
-                            // A skipped future-kind event explains the gap; the
-                            // log itself is fine.
+                            // A skipped future-kind event or a corrupt line
+                            // explains the gap; the log itself is still usable.
                             tracing::warn!(
                                 expected,
                                 got = event.seq,
-                                "seq gap after skipping an unknown event kind"
+                                "seq gap after a skipped line"
                             );
                         }
                     }
@@ -693,8 +724,9 @@ impl SessionStore {
                 Err(err) => {
                     // A deserialization failure on a non-final line is either
                     // corruption or a kind this build predates. The `type` tag
-                    // tells them apart: an unknown kind is skipped, corruption
-                    // still fails the load.
+                    // tells them apart, but both are skippable: a future kind is
+                    // not ours to judge, and a torn line is damage that has
+                    // already happened.
                     let unknown = serde_json::from_str::<serde_json::Value>(line)
                         .ok()
                         .and_then(|value| {
@@ -705,14 +737,27 @@ impl SessionStore {
                         })
                         .unwrap_or(false);
                     if unknown {
-                        skipped_unknown = true;
+                        tolerate_gap = true;
                         tracing::debug!(
                             session = %id,
                             "skipping an event kind written by a newer build"
                         );
                         continue;
                     }
-                    return Err(StoreError::Json(err));
+                    // Corruption: a torn line from an interrupted append (a full
+                    // disk, a killed process). One bad line must not make a
+                    // long session unreadable — skip it, loudly, and let the seq
+                    // gap be tolerated. The replay is missing an event, which is
+                    // visible in the log rather than fatal to every later turn.
+                    tolerate_gap = true;
+                    tracing::warn!(
+                        session = %id,
+                        line = index + 1,
+                        %err,
+                        session_file = %path.display(),
+                        "skipping a corrupt event line"
+                    );
+                    continue;
                 }
             }
         }
@@ -1512,6 +1557,78 @@ mod tests {
         );
         // 生成标题不动 Task 聚合：`task()` 仍无标题，用户重命名语义不受污染。
         assert_eq!(store.task(&created.id).expect("task").title(), None);
+    }
+
+    #[test]
+    fn load_skips_a_torn_line_from_an_interrupted_append() {
+        use std::io::Write as _;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let store = SessionStore::new(dir.path());
+        let created = store.create_task(&meta()).expect("create task");
+        let path = store.session_path(&created.id);
+
+        // What a full disk left behind: the serialization of one event stopped
+        // partway (`{"v":11,"seq":3,"ts":"`), and the retry was appended straight
+        // after it, gluing a prefix and a whole event into one unparsable line.
+        let mut file = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .expect("open");
+        writeln!(
+            file,
+            r#"{{"v":11,"seq":3,"ts":"{{"v":11,"seq":3,"ts":"2026-11-16T00:00:00Z","session":"{}","turn":1,"type":"user_message","data":{{"text":"hi"}}}}"#,
+            created.id
+        )
+        .expect("torn line");
+        writeln!(
+            file,
+            r#"{{"v":11,"seq":3,"ts":"2026-11-16T00:00:00Z","session":"{}","turn":1,"type":"user_message","data":{{"text":"hi"}}}}"#,
+            created.id
+        )
+        .expect("retry");
+        file.flush().expect("flush");
+
+        // One corrupt line must not make the session unreadable: the retried
+        // event is still there, and the load reports the rest as usual.
+        let events = store.load(&created.id).expect("load skips the torn line");
+        assert_eq!(events.len(), 3);
+        assert_eq!(events.last().expect("last").seq, 3);
+        assert!(matches!(
+            events.last().expect("last").kind,
+            EventKind::UserMessage(_)
+        ));
+    }
+
+    #[test]
+    fn load_drops_a_duplicate_event_line_from_a_retried_append() {
+        use std::io::Write as _;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let store = SessionStore::new(dir.path());
+        let created = store.create_task(&meta()).expect("create task");
+        let path = store.session_path(&created.id);
+
+        // The event was written, then `sync_all` failed on a full disk and the
+        // caller retired the append: the same seq lands on disk twice. The
+        // replay keeps one copy instead of failing the whole session.
+        let line = format!(
+            r#"{{"v":11,"seq":3,"ts":"2026-11-16T00:00:00Z","session":"{}","turn":1,"type":"user_message","data":{{"text":"hi"}}}}"#,
+            created.id
+        );
+        let mut file = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .expect("open");
+        writeln!(file, "{line}").expect("first");
+        writeln!(file, "{line}").expect("retry");
+        file.flush().expect("flush");
+
+        let events = store.load(&created.id).expect("load keeps one copy");
+        assert_eq!(events.len(), 3);
+        assert_eq!(events.last().expect("last").seq, 3);
     }
 
     #[test]
