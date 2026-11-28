@@ -3541,9 +3541,11 @@ cli:
       net_proxy_only:
         en: "proxy-only via sandbox-exec; the proxy port is assigned at startup"
         zh-CN: "经 sandbox-exec 只走代理；代理端口在启动时分配"
+      # ADR-0109：边界不是审批（那会挡住无人值守）。没有沙箱时宿主侧就真的没有
+      # 边界，这一行必须把这句说清楚，而不是给一个「审批在管」的错觉。
       sandbox_none_boundary:
-        en: "none; approval and workspace path checks are the boundary"
-        zh-CN: "无；边界就是审批和路径检查"
+        en: "none; run_shell can do what you can — `[network] allow` and each MCP server's grants are the only edges left"
+        zh-CN: "无沙箱：`run_shell` 能做你本人能做的一切；边界只剩 `[network] allow` 与 MCP 服务器的授权"
       # 「沙箱里 sudo / doas 为什么不行」。两句都**不报错**：一行是设计如此，
       # 一行是没有沙箱，两者都不是配置错误，所以 doctor 用 `[ok]` 而不是 `[warn]`。
       # 报错文案要原样写出 doas 那句，因为那才是用户 grep 到的那一行。

@@ -47,7 +47,7 @@ ADR-0108「推翻三」把这件事从 skills 里摘出来了：`run_shell` 是
 | 编号 | 任务 | 产出 | 验收 |
 |---|---|---|---|
 | **B1** ✅ | 执行面的安全模型 | ADR-0109（Accepted）：**不加逐次审批**；边界由 MCP 沙箱 + grants、宿主沙箱、网络 allowlist、skill 摘要绑定负责；无人值守照常运行 | 已写入 `docs/design/DECISIONS.md`；ADR-0108「推翻三」的措辞已按它修订 | — |
-| **B2** | 把边界写进文档与诊断 | README / `SKILLS.md` §7 / `qc doctor` 说明「边界 = 配置」，并点明 `[sandbox] mode = "none"` 的含义 | 文档评审；不改 `policy.rs`、不新增等待 | S |
+| **B2** ✅ | 把边界写进文档与诊断 | README 的 Skills 一节、`SKILLS.md` §7、`qc doctor` 的 `sandbox_none_boundary` 都改成「边界 = MCP 沙箱 + grants + 宿主沙箱 + 网络 allowlist」，并点明 `[sandbox] mode = "none"` 时宿主侧没有边界 | i18n 门禁 12/12；`doctor_mcp` 的 25 条通过（第 26 条是本机沙箱环境的已知用例）；不改 `policy.rs` | S |
 
 > 顺序上 B 不阻塞 C/D：只有「对外宣称合规」这一条依赖它。
 
