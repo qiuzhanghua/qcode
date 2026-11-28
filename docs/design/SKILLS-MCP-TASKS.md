@@ -46,7 +46,7 @@ ADR-0108「推翻三」把这件事从 skills 里摘出来了：`run_shell` 是
 
 | 编号 | 任务 | 产出 | 验收 |
 |---|---|---|---|
-| **B1** | 立项并写 ADR：执行类工具的默认审批 | 新 ADR（编号顺延），至少覆盖三个选项：(a) 维持现状 + 文档写清不声称合规；(b) `Shell` 默认 `Ask`，用 allowlist 规则恢复日常命令；(c) 会话级显式「信任」开关 + 定时任务的不可用问题如何解 | ADR 定稿；若选 (b)/(c)，策略变更 + `policy.rs` 测试更新 + 所有前端审批路径回归 |
+| **B1** ✅ | 立项并写 ADR：执行类工具的默认审批 | ADR-0109（拟议）：`Shell`/`Network` 默认 `Ask`；已声明的 allowlist 免问；交互式三档；无人值守立即拒绝而不是烧 300s | 已写入 `docs/design/DECISIONS.md`；版本号与模板默认 allowlist 两处待定 | — |
 | **B2** | （视 B1）实现统一闸门 | `qcode-core/src/policy.rs`、无人值守路径（`schedule.rs` 的 `UNATTENDED_APPROVAL_TIMEOUT=300s` 不能每个命令烧一次） | 定时任务的多步 skill 流程不被逐命令审批拖死；ADR-0105 文案与 golden 同步 |
 
 > 顺序上 B 不阻塞 C/D：只有「对外宣称合规」这一条依赖它。
