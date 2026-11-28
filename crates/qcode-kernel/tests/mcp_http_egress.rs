@@ -84,7 +84,9 @@ async fn tools_for(
         qcode_tools::sandbox::SandboxPaths::default(),
     )
     .expect("sandbox");
-    let skills = std::sync::Arc::new(qcode_tools::skills::SkillSet::default());
+    let skills = std::sync::Arc::new(qcode_tools::skills::SkillIndex::new(
+        qcode_tools::skills::SkillSet::default(),
+    ));
     let shell_env = std::sync::Arc::new(qcode_tools::shell_env::ShellEnvCache::new(
         loaded.shell.clone(),
     ));

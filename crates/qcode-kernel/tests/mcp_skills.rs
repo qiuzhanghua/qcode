@@ -14,7 +14,7 @@ use qcode_core::tool::{Tool, ToolContext};
 use qcode_mcp::{McpConfig, McpServerConfig};
 use qcode_tools::sandbox::{SandboxMode, SandboxNetwork, SandboxPaths, build};
 use qcode_tools::shell_env::ShellEnvCache;
-use qcode_tools::skills::{SkillSet, SkillSource, SkillTool};
+use qcode_tools::skills::{SkillIndex, SkillSet, SkillSource, SkillTool};
 use serde_json::json;
 
 const STUB: &str = env!("CARGO_BIN_EXE_mcp-probe-stub");
@@ -149,7 +149,9 @@ async fn the_index_entry_leads_to_a_verified_body() {
     let served = qcode_kernel::collect_served_skills(&connection, &config, false).await;
     assert_eq!(served.len(), 1);
 
-    let skills = Arc::new(SkillSet::default().with_served(qcode_kernel::served_skills(served)));
+    let skills = Arc::new(SkillIndex::new(
+        SkillSet::default().with_served(qcode_kernel::served_skills(served)),
+    ));
     // The tool needs a reader, and in a real session `build_tools` builds it
     // from the same connection. Reusing the connection here is the same thing.
     let source = connection.source.clone().expect("a connected server");

@@ -53,7 +53,9 @@ fn assembled(data_dir: &std::path::Path) -> Assembled {
         // `qcode_kernel::assemble` 填的那份同义：装配时用的工作区。
         workspace: std::env::temp_dir(),
         tools: qcode_core::tool::ToolRegistry::new(Vec::new()),
-        skills: Arc::new(qcode_tools::skills::SkillSet::default()),
+        skills: Arc::new(qcode_tools::skills::SkillIndex::new(
+            qcode_tools::skills::SkillSet::default(),
+        )),
         provider: Box::new(MockProvider::text("done")),
         egress: None,
         network: None,

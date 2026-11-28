@@ -10,7 +10,7 @@ use qcode_core::provider::{StopReason, StreamEvent};
 use qcode_core::store::SessionStore;
 use qcode_core::tool::ToolRegistry;
 use qcode_providers::MockProvider;
-use qcode_tools::skills::{SKILL_FILE, SkillSet, SkillSource, SkillTool};
+use qcode_tools::skills::{SKILL_FILE, SkillIndex, SkillSet, SkillSource, SkillTool};
 use serde_json::json;
 use tokio_util::sync::CancellationToken;
 
@@ -27,10 +27,10 @@ async fn skill_is_listed_then_loaded_by_the_tool() {
     )
     .unwrap();
 
-    let skills = Arc::new(SkillSet::discover(&[(
+    let skills = Arc::new(SkillIndex::new(SkillSet::discover(&[(
         SkillSource::Project,
         workspace.path().join(".qcode/skills"),
-    )]));
+    )])));
     let prompt = skills.prompt_section().expect("skill index");
     assert!(prompt.contains("`demo` (project)"));
 

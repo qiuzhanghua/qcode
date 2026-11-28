@@ -73,7 +73,9 @@ async fn connecting_then_building_starts_each_server_once() {
         "the stub should have contributed tools"
     );
 
-    let skills = Arc::new(qcode_tools::skills::SkillSet::default());
+    let skills = Arc::new(qcode_tools::skills::SkillIndex::new(
+        qcode_tools::skills::SkillSet::default(),
+    ));
     let tools =
         qcode_kernel::build_tools(connection, &Default::default(), &skills, sandbox, shell_env)
             .await;

@@ -167,7 +167,7 @@ use qcode_mcp::McpConfig;
 use qcode_tools::builtin_registry_with_env;
 use qcode_tools::sandbox::{Sandbox, SandboxMode, SandboxNetwork};
 use qcode_tools::skills::{
-    ServedFile, Skill, SkillDir, SkillEntry, SkillSet, SkillSource, SkillTool,
+    ServedFile, Skill, SkillDir, SkillEntry, SkillIndex, SkillSet, SkillSource, SkillTool,
 };
 use qcode_tools::web_search::WebSearch;
 pub struct ToolWiring {
@@ -230,7 +230,7 @@ pub async fn connect_mcp(
 pub async fn build_tools(
     mcp: qcode_mcp::McpConnection,
     search: &config::SearchConfig,
-    skills: &Arc<SkillSet>,
+    skills: &Arc<SkillIndex>,
     sandbox: Arc<dyn Sandbox>,
     shell_env: Arc<qcode_tools::shell_env::ShellEnvCache>,
 ) -> ToolRegistry {
@@ -764,7 +764,7 @@ pub struct Assembled {
     /// replace (see `qcd::launch_workspace`).
     pub workspace: std::path::PathBuf,
     pub tools: ToolRegistry,
-    pub skills: Arc<SkillSet>,
+    pub skills: Arc<SkillIndex>,
     pub provider: Box<dyn Provider>,
     /// Kept so the proxy lives exactly as long as the kernel does.
     pub egress: Option<Arc<Egress>>,
@@ -871,12 +871,16 @@ pub async fn assemble(
     // ADR-0108 §2: the index is built from the same connection, so a served
     // skill and the tool that loads it always come from one handshake.
     let served = collect_served_skills(&mcp, &loaded.mcp, loaded.skills.mcp).await;
-    let skills = if served.is_empty() {
-        load_skills(&loaded.skills, cwd)
+    // One index per session: `SkillSet` stays the immutable value it always
+    // was, and the index is what lets a later `list_changed` swap one server's
+    // contribution without rebuilding this assembly (ADR-0108 P1).
+    let set = if served.is_empty() {
+        (*load_skills(&loaded.skills, cwd)).clone()
     } else {
         let local = load_skills(&loaded.skills, cwd);
-        Arc::new((*local).clone().with_served(served_skills(served)))
+        (*local).clone().with_served(served_skills(served))
     };
+    let skills = Arc::new(SkillIndex::new(set));
     let tools = build_tools(mcp, &loaded.search, &skills, sandbox, shell_env.clone()).await;
     let store = qcode_core::store::SessionStore::new(data_dir);
     Ok(Assembled {

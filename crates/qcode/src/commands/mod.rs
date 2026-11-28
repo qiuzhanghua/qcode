@@ -9,7 +9,7 @@ use qcode_core::question::{InteractiveQuestioner, Questioner};
 use qcode_core::store::SessionStore;
 use qcode_core::tool::Tool;
 use qcode_kernel::config;
-use qcode_tools::skills::{Lookup, SkillSet};
+use qcode_tools::skills::{Resolved, SkillIndex, SkillSet};
 use qcode_tools::subagent::SubagentTool;
 use qcode_tui::SkillView;
 use std::io::IsTerminal;
@@ -99,25 +99,21 @@ pub(crate) fn read_images(
 }
 
 pub(crate) fn activated_prompt(
-    skills: &SkillSet,
+    skills: &SkillIndex,
     name: &str,
     task: String,
 ) -> Result<String, Box<dyn std::error::Error>> {
-    let skill = match skills.lookup(name) {
-        Lookup::Found(skill) => skill,
-        Lookup::Unknown => {
-            let available: Vec<&str> = skills
-                .iter()
-                .take(20)
-                .map(|skill| skill.name.as_str())
-                .collect();
+    let skill = match skills.resolve(name) {
+        Resolved::Found(skill) => skill,
+        Resolved::Unknown => {
+            let available = skills.names(20);
             return Err(qcode_i18n::trp(
                 "err.cli.mod.unknown_skill",
                 &[name, available.join(", ").as_str()],
             )
             .into());
         }
-        Lookup::Ambiguous(candidates) => {
+        Resolved::Ambiguous(candidates) => {
             // `/skills <name>` cannot name an origin, so say which origins
             // exist rather than picking one (ADR-0108 §3).
             let origins: Vec<String> = candidates
@@ -143,8 +139,9 @@ pub(crate) fn activated_prompt(
     ))
 }
 
-pub(crate) fn skill_views(skills: &SkillSet) -> Vec<SkillView> {
+pub(crate) fn skill_views(skills: &SkillIndex) -> Vec<SkillView> {
     skills
+        .snapshot()
         .iter()
         .map(|skill| SkillView {
             name: skill.name.clone(),

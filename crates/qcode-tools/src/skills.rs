@@ -24,7 +24,8 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use async_trait::async_trait;
 use qcode_core::event::ToolMetadata;
@@ -1131,6 +1132,131 @@ impl SkillSet {
     }
 }
 
+/// A lookup that owns its skills.
+///
+/// [`Lookup`] borrows from the set, which cannot cross an `await`; the index
+/// resolves to owned values instead so a session's skills can be swapped while
+/// a turn is in flight (ADR-0108 P1).
+#[derive(Debug)]
+// `Found` owns a whole `Skill` while `Unknown` owns nothing: the size spread is
+// real, not a mistake. The value lives from one `resolve` to one `match`, so
+// boxing (or `Result<Skill, …>`-style splitting) would be ceremony, not a win.
+#[allow(clippy::large_enum_variant)]
+pub enum Resolved {
+    Found(Skill),
+    Unknown,
+    Ambiguous(Vec<Skill>),
+}
+
+/// The session's skills, swappable between turns.
+///
+/// `SkillSet` is a value: immutable once built. That is what made
+/// `notifications/skills/list_changed` impossible without rebuilding every
+/// frontend's cached prompt string (ADR-0108 §2). The index adds exactly two
+/// things — interior mutability and a revision counter — so a reader can tell
+/// "the section I cached is still current" without diffing strings.
+#[derive(Debug)]
+pub struct SkillIndex {
+    set: RwLock<SkillSet>,
+    revision: AtomicU64,
+}
+
+impl SkillIndex {
+    pub fn new(set: SkillSet) -> Self {
+        Self {
+            set: RwLock::new(set),
+            revision: AtomicU64::new(0),
+        }
+    }
+
+    fn read(&self) -> RwLockReadGuard<'_, SkillSet> {
+        self.set
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn write(&self) -> RwLockWriteGuard<'_, SkillSet> {
+        self.set
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Monotonic; every mutation bumps it once.
+    pub fn revision(&self) -> u64 {
+        self.revision.load(Ordering::SeqCst)
+    }
+
+    /// The prompt section together with the revision it belongs to.
+    ///
+    /// The read guard is held while both are taken, so a writer cannot slip
+    /// between them and hand back a string newer than the number it reports.
+    pub fn section(&self) -> (u64, Option<String>) {
+        let set = self.read();
+        (self.revision.load(Ordering::SeqCst), set.prompt_section())
+    }
+
+    /// The prompt section, without the revision. Kept for the frontends that
+    /// still cache the string once (ADR-0108 P1 C2 moves them to [`Self::section`]).
+    pub fn prompt_section(&self) -> Option<String> {
+        self.read().prompt_section()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.read().is_empty()
+    }
+
+    pub fn len(&self) -> usize {
+        self.read().len()
+    }
+
+    /// The skill called `name`, when exactly one origin answers to it.
+    pub fn get(&self, name: &str) -> Option<Skill> {
+        self.read().get(name).cloned()
+    }
+
+    /// Up to `limit` names, for the "unknown skill; available: …" hint.
+    pub fn names(&self, limit: usize) -> Vec<String> {
+        self.read()
+            .iter()
+            .take(limit)
+            .map(|skill| skill.name.clone())
+            .collect()
+    }
+
+    /// An immutable copy, for callers that only ever read (the UI list, the
+    /// `/skill` slash command). Rare and small; served skills carry no body.
+    pub fn snapshot(&self) -> SkillSet {
+        self.read().clone()
+    }
+
+    pub fn resolve(&self, name: &str) -> Resolved {
+        match self.read().lookup(name) {
+            Lookup::Found(skill) => Resolved::Found(skill.clone()),
+            Lookup::Unknown => Resolved::Unknown,
+            Lookup::Ambiguous(candidates) => {
+                Resolved::Ambiguous(candidates.into_iter().cloned().collect())
+            }
+        }
+    }
+
+    /// Replace one server's contribution, keeping every local skill and every
+    /// other server's (ADR-0108 §2, `list_changed`).
+    ///
+    /// Returns the new revision. The limits and the "never shadow" rule are the
+    /// same ones assembly applies, because it goes through
+    /// [`SkillSet::with_served`] as well.
+    pub fn replace_served(&self, server: &str, served: Vec<Skill>) -> u64 {
+        let mut set = self.write();
+        let kept: Vec<Skill> = std::mem::take(&mut set.skills)
+            .into_iter()
+            .filter(|skill| !matches!(&skill.source, SkillSource::Mcp(name) if name == server))
+            .collect();
+        *set = SkillSet::sorted(kept).with_served(served);
+        drop(set);
+        self.revision.fetch_add(1, Ordering::SeqCst) + 1
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct SkillArgs {
     name: String,
@@ -1142,7 +1268,7 @@ struct SkillArgs {
 
 /// The `skill` tool: loads a skill body, or one of its bundled files.
 pub struct SkillTool {
-    skills: Arc<SkillSet>,
+    skills: Arc<SkillIndex>,
     /// Present when servers may serve skills. `None` still allows the local
     /// ones; a served skill then reports that this session cannot fetch it
     /// rather than pretending to be empty.
@@ -1150,14 +1276,14 @@ pub struct SkillTool {
 }
 
 impl SkillTool {
-    pub fn new(skills: Arc<SkillSet>) -> Self {
+    pub fn new(skills: Arc<SkillIndex>) -> Self {
         Self {
             skills,
             reader: None,
         }
     }
 
-    pub fn with_reader(skills: Arc<SkillSet>, reader: Arc<dyn RemoteSkillReader>) -> Self {
+    pub fn with_reader(skills: Arc<SkillIndex>, reader: Arc<dyn RemoteSkillReader>) -> Self {
         Self {
             skills,
             reader: Some(reader),
@@ -1249,31 +1375,27 @@ impl Tool for SkillTool {
         let args: SkillArgs =
             serde_json::from_value(args).map_err(|error| ToolError::Invalid(error.to_string()))?;
 
-        let skill = match self.skills.lookup(&args.name) {
-            Lookup::Found(skill) => skill,
-            Lookup::Unknown => {
-                let available: Vec<&str> = self
-                    .skills
-                    .skills
-                    .iter()
-                    .take(20)
-                    .map(|skill| skill.name.as_str())
-                    .collect();
+        let skill = match self.skills.resolve(&args.name) {
+            Resolved::Found(skill) => skill,
+            Resolved::Unknown => {
+                let available = self.skills.names(20);
                 return Err(ToolError::Invalid(format!(
                     "unknown skill '{}'; available: {}",
                     args.name,
                     available.join(", ")
                 )));
             }
-            Lookup::Ambiguous(candidates) => {
+            Resolved::Ambiguous(candidates) => {
                 // Never pick one: a served skill shadowing a local one of the
                 // same name is exactly what SEP-2640 forbids.
-                let by_source = |wanted: Option<&str>| {
-                    candidates.iter().copied().find(|skill| {
-                        wanted.is_some_and(|wanted| skill.source.origin_label() == wanted)
-                    })
-                };
-                match by_source(args.source.as_deref()) {
+                let wanted = args.source.as_deref();
+                let chosen = wanted.and_then(|wanted| {
+                    candidates
+                        .iter()
+                        .find(|skill| skill.source.origin_label() == wanted)
+                        .cloned()
+                });
+                match chosen {
                     Some(skill) => skill,
                     None => {
                         let origins: Vec<String> = candidates
@@ -1295,33 +1417,33 @@ impl Tool for SkillTool {
         // model asks for them.
         if skill.body_is_remote() {
             let entry = skill.entry.as_ref().expect("checked above");
+            let root_uri = entry.uri.clone();
+            let listed = entry.listed.clone();
             return match args.file {
                 Some(file) => {
-                    let uri = resolve_served_file_uri(&entry.uri, &file)?;
-                    let bytes = self.read_served(skill, &uri).await?;
+                    let uri = resolve_served_file_uri(&root_uri, &file)?;
+                    let bytes = self.read_served(&skill, &uri).await?;
                     let text = String::from_utf8(bytes)
                         .map_err(|_| ToolError::Invalid(format!("'{file}' is not utf-8 text")))?;
                     Ok(ToolOutput::ok(text.trim_end().to_string()))
                 }
                 None => {
-                    let uri = entry.uri.clone();
-                    let bytes = self.read_served(skill, &uri).await?;
+                    let bytes = self.read_served(&skill, &root_uri).await?;
                     let body = String::from_utf8(bytes)
                         .map_err(|_| ToolError::Invalid("SKILL.md is not utf-8".to_string()))?;
                     let fields = parse_frontmatter(&body)?;
-                    verify_frontmatter(&entry.listed, &fields)
+                    verify_frontmatter(&listed, &fields)
                         .map_err(|error| ToolError::Invalid(error.to_string()))?;
-                    Ok(render_skill(&Skill {
-                        body,
-                        ..skill.clone()
-                    }))
+                    let mut skill = skill;
+                    skill.body = body;
+                    Ok(render_skill(&skill))
                 }
             };
         }
 
         match args.file {
-            Some(file) => read_bundled_file(skill, &file),
-            None => Ok(render_skill(skill)),
+            Some(file) => read_bundled_file(&skill, &file),
+            None => Ok(render_skill(&skill)),
         }
     }
 }
@@ -1488,7 +1610,7 @@ mod tests {
     }
 
     fn tool(set: SkillSet) -> SkillTool {
-        SkillTool::new(Arc::new(set))
+        SkillTool::new(Arc::new(SkillIndex::new(set)))
     }
 
     /// ADR-0108 M0 的护栏：`Skill(dir)` 改成枚举、`SkillSource` 去掉 `Copy`，
@@ -1677,8 +1799,65 @@ Skills never change approval rules.
             }
         }
 
-        fn set_with(skill: Skill) -> Arc<SkillSet> {
-            Arc::new(SkillSet::default().with_served(vec![skill]))
+        fn set_with(skill: Skill) -> Arc<SkillIndex> {
+            Arc::new(SkillIndex::new(
+                SkillSet::default().with_served(vec![skill]),
+            ))
+        }
+
+        #[test]
+        fn the_index_replaces_one_servers_skills_and_keeps_the_rest() {
+            let named = |name: &str, server: &str| Skill {
+                name: name.to_string(),
+                description: "x".to_string(),
+                source: SkillSource::Mcp(server.to_string()),
+                dir: SkillDir::Remote {
+                    uri: format!("skill://{name}/SKILL.md"),
+                },
+                body: String::new(),
+                files: Vec::new(),
+                files_truncated: false,
+                entry: None,
+            };
+            let index = SkillIndex::new(
+                SkillSet::default()
+                    .with_served(vec![named("alpha", "github"), named("beta", "gitlab")]),
+            );
+            let before = index.revision();
+
+            let after = index.replace_served("github", vec![named("gamma", "github")]);
+            assert!(after > before, "a replacement must bump the revision");
+            assert_eq!(index.revision(), after);
+            assert_eq!(index.len(), 2, "gitlab kept, github swapped");
+            assert!(index.get("alpha").is_none(), "the old github skill is gone");
+            assert!(index.get("beta").is_some(), "another server is untouched");
+            assert!(index.get("gamma").is_some());
+        }
+
+        #[test]
+        fn a_replacement_applies_the_limits_like_the_first_index() {
+            let index = SkillIndex::new(SkillSet::default());
+            let files: Vec<(String, Vec<u8>)> = (0..=MAX_SKILL_RESOURCES)
+                .map(|i| (format!("memory://big/{i}.md"), Vec::new()))
+                .collect();
+            let oversized = SkillEntry {
+                uri: SKILL_URI.to_string(),
+                files: files
+                    .into_iter()
+                    .map(|(uri, bytes)| ServedFile {
+                        uri,
+                        digest: sha256_digest(&bytes),
+                        size: bytes.len() as u64,
+                    })
+                    .collect(),
+                dynamic: false,
+                listed: listed("big", "too big"),
+            };
+            index.replace_served("github", vec![served_skill(oversized, "big")]);
+            assert!(
+                index.get("big").is_none(),
+                "over-limit skills never enter the index"
+            );
         }
 
         #[test]
@@ -2224,8 +2403,11 @@ Skills never change approval rules.
         #[tokio::test]
         async fn the_tool_refuses_to_guess_and_accepts_an_explicit_source() {
             let (tmp, set) = local_set();
-            let set =
-                Arc::new(set.with_served(vec![served("report", "github", "The remote one.")]));
+            let set = Arc::new(SkillIndex::new(set.with_served(vec![served(
+                "report",
+                "github",
+                "The remote one.",
+            )])));
             let tool = SkillTool::new(set);
             let context = ToolContext::for_test(tmp.path());
 
@@ -2265,7 +2447,9 @@ Skills never change approval rules.
         #[tokio::test]
         async fn a_served_skill_says_so_when_asked_for_a_local_file() {
             let (tmp, set) = local_set();
-            let set = Arc::new(set.with_served(vec![served("remote", "github", "x")]));
+            let set = Arc::new(SkillIndex::new(
+                set.with_served(vec![served("remote", "github", "x")]),
+            ));
             let tool = SkillTool::new(set);
             let context = ToolContext::for_test(tmp.path());
 
